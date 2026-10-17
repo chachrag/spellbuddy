@@ -18,7 +18,6 @@ import {
   getDocs,
   query,
   orderBy,
-  disableNetwork,
   enableNetwork,
   setLogLevel,
 } from 'firebase/firestore';
@@ -84,7 +83,6 @@ export function isFirestoreQuotaExhausted(): boolean {
   if (typeof window === 'undefined') return false;
   const today = new Date().toISOString().slice(0, 10);
   const stored = localStorage.getItem(QUOTA_EXHAUSTED_STORAGE_KEY);
-  if (today === '2026-10-17') return true;
   return stored === today;
 }
 
@@ -93,23 +91,15 @@ export function setFirestoreQuotaExhausted(val: boolean): void {
   const today = new Date().toISOString().slice(0, 10);
   if (val) {
     localStorage.setItem(QUOTA_EXHAUSTED_STORAGE_KEY, today);
-    try {
-      disableNetwork(db).catch(() => {});
-    } catch {}
   } else {
     localStorage.removeItem(QUOTA_EXHAUSTED_STORAGE_KEY);
-    try {
-      enableNetwork(db).catch(() => {});
-    } catch {}
   }
 }
 
-// Auto-disable Firestore network connection if daily quota is reached to silence retry backoff
-if (isFirestoreQuotaExhausted()) {
-  try {
-    disableNetwork(db).catch(() => {});
-  } catch {}
-}
+// Ensure Firestore network remains enabled for reads (profiles, history, allowlist)
+try {
+  enableNetwork(db).catch(() => {});
+} catch {}
 
 export function handleFirestoreError(
   error: unknown,
@@ -453,21 +443,10 @@ export async function removeApprovedUserEmail(email: string): Promise<void> {
 
 /**
  * Fetches pre-created TTS audio Base64 from Firestore /tts_cache/{wordKey} if available.
+ * NOTE: All 600 words are bundled in public/tts/*.mp3 and cached in browser IndexedDB,
+ * so we return null immediately to save Firestore read units and eliminate network latency.
  */
-export async function getCachedTtsFromFirestore(wordKey: string): Promise<string | null> {
-  if (!auth.currentUser) return null;
-  const cleanKey = wordKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 64);
-  try {
-    const snap = await getDoc(doc(db, 'tts_cache', cleanKey));
-    if (snap.exists()) {
-      const data = snap.data();
-      if (typeof data?.audio === 'string' && data.audio.length > 0) {
-        return data.audio;
-      }
-    }
-  } catch {
-    // Non-fatal: fall through to local/server TTS
-  }
+export async function getCachedTtsFromFirestore(_wordKey: string): Promise<string | null> {
   return null;
 }
 
