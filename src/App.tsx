@@ -37,6 +37,7 @@ import {
   gradeHandwrittenSheet,
   speakWithGeminiTTS,
   prewarmRoundAudio,
+  getVoiceEnginePreference,
   stopCurrentAudio,
   StudioVoice,
   getCustomApiKey,
@@ -252,9 +253,9 @@ export default function App() {
     const fallbackText = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
     const cacheKey = `word_v3_${wordItem.word.toLowerCase().trim()}`;
 
-    // Gently pre-warm the next word in the round in the background while the current word plays
+    // Gently pre-warm the next word in the round in the background when using cached/Gemini audio
     const nextWord = words[index + 1];
-    if (nextWord) {
+    if (nextWord && getVoiceEnginePreference() !== 'device_natural') {
       prewarmRoundAudio([nextWord], voice, 1).catch(() => {});
     }
 

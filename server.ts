@@ -543,15 +543,18 @@ async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   }
 }
 
-// 2. Text-to-Speech audio generation (Edge Neural 'en-US-AvaNeural' MP3 -> Gemini Native TTS WAV -> Studio Fallback)
+// 2. Text-to-Speech audio generation (Gemini Native TTS WAV when useGeminiTts !== false, or Studio MP3 fallback)
 app.post('/api/spelling/tts', async (req, res) => {
-  const { prompt, text, voice } = req.body;
+  const { prompt, text, voice, useGeminiTts = true } = req.body;
   const rawText = prompt || text;
   if (!rawText) {
     return res.status(400).json({ error: 'No text provided for TTS.' });
   }
   const textToSpeak = cleanSpokenText(rawText);
-  const cacheKey = `neural_v3_Ava:${textToSpeak.toLowerCase()}`;
+  const voiceName = getValidVoice(voice);
+  const cacheKey = useGeminiTts
+    ? `gemini_v4_${voiceName}:${textToSpeak.toLowerCase()}`
+    : `studio_v3:${textToSpeak.toLowerCase()}`;
 
   // 0. Check server in-memory TTS cache first
   const cached = serverTtsCache.get(cacheKey);
@@ -559,15 +562,17 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ audio: cached.audio, format: cached.format, cached: true });
   }
 
-  // 1. Primary Path: High-speed Natural Studio Speech (MP3) — 0 Gemini tokens, instant response (~100ms)
-  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
-  if (naturalFallback) {
-    const entry = { audio: naturalFallback, format: 'audio/mp3' };
-    setServerTtsCache(cacheKey, entry);
-    return res.json({ ...entry, cached: false });
+  // 1. Primary Path when Gemini Studio AI Voice is selected: Gemini 2.5 Flash Native TTS ('Kore') encoded as compact WAV
+  if (useGeminiTts) {
+    const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
+    const geminiWav = await generateGeminiTtsWav(textToSpeak, voiceName, customKey);
+    if (geminiWav) {
+      setServerTtsCache(cacheKey, geminiWav);
+      return res.json({ ...geminiWav, cached: false });
+    }
   }
 
-  // 2. Secondary Path: Edge Neural Speech
+  // 2. Secondary Path: Edge Neural Speech (when reachable outside datacenter IPs)
   const edgeNeuralMp3 = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
   if (edgeNeuralMp3) {
     const entry = { audio: edgeNeuralMp3, format: 'audio/mp3' };
@@ -575,13 +580,14 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ ...entry, cached: false });
   }
 
-  // 3. Tertiary Path: Gemini 2.5 Flash Native TTS ('Kore') encoded as compact WAV
-  const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
-  const voiceName = getValidVoice(voice);
-  const geminiWav = await generateGeminiTtsWav(textToSpeak, voiceName, customKey);
-  if (geminiWav) {
-    setServerTtsCache(cacheKey, geminiWav);
-    return res.json({ ...geminiWav, cached: false });
+  // 3. Fallback Path: Studio MP3 Speech (marked isFallback when useGeminiTts was requested so it won't overwrite Gemini cache)
+  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
+  if (naturalFallback) {
+    const entry = { audio: naturalFallback, format: 'audio/mp3' };
+    if (!useGeminiTts) {
+      setServerTtsCache(cacheKey, entry);
+    }
+    return res.json({ ...entry, cached: false, isFallback: Boolean(useGeminiTts) });
   }
 
   return res.json({ audio: null, error: 'Could not generate speech audio.' });

@@ -306,7 +306,11 @@ async function getOrFetchTTSBase64(
   cacheKey: string,
   voiceName: StudioVoice
 ): Promise<string> {
-  const normalizedWordKey = cacheKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const mode = getVoiceEnginePreference();
+  const useGeminiTts = mode === 'gemini_studio';
+  const effectiveKeyPrefix = useGeminiTts ? 'word_gemini_' : 'word_v3_';
+  const rawWord = cacheKey.replace(/^word(?:_v[23]|_gemini)?[-_]/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const normalizedWordKey = `${effectiveKeyPrefix}${rawWord}`;
 
   const cached = audioBase64Cache.get(normalizedWordKey);
   if (cached) {
@@ -336,9 +340,9 @@ async function getOrFetchTTSBase64(
       return firestoreBase64;
     }
 
-    // 3. Fetch from server TTS endpoint (generates once with Gemini 2.5 Flash TTS 'Kore' & encodes to compact WAV)
+    // 3. Fetch from server TTS endpoint
     let base64Audio: string | null = null;
-    let audioFormat = 'audio/wav';
+    let audioFormat = useGeminiTts ? 'audio/wav' : 'audio/mp3';
     let isFallback = false;
     let ttsError: string | null = null;
 
@@ -347,14 +351,14 @@ async function getOrFetchTTSBase64(
       const res = await fetch('/api/spelling/tts', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ prompt: promptDirection, voice: geminiVoice, useGeminiTts: true }),
+        body: JSON.stringify({ prompt: promptDirection, voice: geminiVoice, useGeminiTts }),
       });
 
       if (res.ok) {
         const data = await res.json();
         if (data.audio) {
           base64Audio = data.audio;
-          audioFormat = data.format || 'audio/wav';
+          audioFormat = data.format || audioFormat;
           isFallback = Boolean(data.isFallback);
         } else if (data.error) {
           ttsError = data.error;
@@ -370,11 +374,16 @@ async function getOrFetchTTSBase64(
       throw new Error(ttsError || 'Audio stream unavailable.');
     }
 
-    // Only persist high-quality neural/Gemini TTS audio permanently to IndexedDB and Firestore /tts_cache
+    // Persist non-fallback audio permanently to IndexedDB and Firestore /tts_cache
     if (!isFallback) {
       setIdbAudio(normalizedWordKey, base64Audio).catch(() => {});
-      const targetWord = cacheKey.replace(/^word(?:_v[23])?[-_]/i, '').toLowerCase();
-      saveCachedTtsToFirestore(normalizedWordKey, targetWord, 'AvaNeural', base64Audio, audioFormat).catch(() => {});
+      saveCachedTtsToFirestore(
+        normalizedWordKey,
+        rawWord,
+        useGeminiTts ? geminiVoice : 'studio',
+        base64Audio,
+        audioFormat
+      ).catch(() => {});
       audioBase64Cache.set(normalizedWordKey, base64Audio);
     }
 
@@ -395,8 +404,10 @@ async function getOrFetchTTSBase64(
 let geminiTtsQuotaHit = false;
 
 /**
- * Speaks text using cached Neural MP3/WAV audio via standard HTML5 Audio (with Web Audio fallback).
- * HTML5 Audio seamlessly follows macOS CoreAudio and Bluetooth (AirPods) output device routing.
+ * Speaks text using the selected Voice Engine:
+ * - 'device_natural' (Default): On-device neural voices (Ava/Samantha/Siri on Mac/iOS, Google US on Chrome/Android, Jenny on Windows)
+ * - 'gemini_studio': Gemini 2.5 Flash Native TTS ('Kore' voice) cached forever in Firestore /tts_cache as compact WAV
+ * - 'server_cached': Pre-cached audio clips from Firestore / IndexedDB
  */
 export async function speakWithGeminiTTS(
   promptDirection: string,
@@ -410,14 +421,8 @@ export async function speakWithGeminiTTS(
 
   const mode = getVoiceEnginePreference();
 
-  // 1. Device Natural Voice (Uses Apple Ava/Samantha/Siri or Google/Windows neural voice - human & expressive)
+  // 1. Device Natural Voice (Uses Apple Ava/Samantha/Siri or Google/Windows neural voice - human & expressive, 0 tokens)
   if (mode === 'device_natural') {
-    playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
-    return;
-  }
-
-  // 2. Gemini Studio Voice: Requires custom API key
-  if (mode === 'gemini_studio' && !getCustomApiKey()) {
     playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
     return;
   }
@@ -677,8 +682,9 @@ export async function generateSpellingRoundWithMeta(
       profile.masteredWords || []
     );
     const theme = getRandomSessionTheme();
-    // Pre-create / warm TTS audio in the background (0 Gemini tokens)
-    prewarmRoundAudio(curatedWords).catch(() => {});
+    if (getVoiceEnginePreference() !== 'device_natural') {
+      prewarmRoundAudio(curatedWords).catch(() => {});
+    }
     return {
       words: curatedWords,
       source: 'adaptive_bank',
@@ -698,7 +704,9 @@ export async function generateSpellingRoundWithMeta(
       const list: WordItem[] = Array.isArray(data) ? data : data.words;
       if (Array.isArray(list) && list.length > 0) {
         const selected = list.slice(0, 10);
-        prewarmRoundAudio(selected).catch(() => {});
+        if (getVoiceEnginePreference() !== 'device_natural') {
+          prewarmRoundAudio(selected).catch(() => {});
+        }
         return {
           words: selected,
           source: data.source === 'ai' ? 'ai' : 'adaptive_bank',
