@@ -91,8 +91,8 @@ export default function App() {
 
   const selectedVoice: StudioVoice = 'Kore';
 
-  const [stage, setStage] = useState<'welcome' | 'round' | 'capture' | 'results'>('welcome');
-  const [showSettings, setShowSettings] = useState(false);
+  const [stage, setStage] = useState<'welcome' | 'round' | 'capture' | 'results' | 'settings'>('welcome');
+  const [previousStage, setPreviousStage] = useState<'welcome' | 'round' | 'capture' | 'results'>('welcome');
   const [settingsInitialTab, setSettingsInitialTab] = useState<'phonemes' | 'history' | 'account' | 'api'>('phonemes');
   const [hasCustomKey, setHasCustomKey] = useState(() => Boolean(getCustomApiKey()));
   const [ttsError, setTtsError] = useState<string | null>(null);
@@ -784,6 +784,18 @@ export default function App() {
     setStage('welcome');
   };
 
+  const openSettings = (tab: 'phonemes' | 'history' | 'account' | 'api' = 'phonemes') => {
+    if (stage !== 'settings') {
+      setPreviousStage(stage);
+    }
+    setSettingsInitialTab(tab);
+    setStage('settings');
+  };
+
+  const closeSettings = () => {
+    setStage(previousStage || 'welcome');
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-blue-50/30 pb-16">
       {/* Sleek Top Header Ribbon - Fits on One Single Row */}
@@ -811,8 +823,18 @@ export default function App() {
 
           {/* Right Menu Strip - Fits cleanly in one row */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {/* Home Button when in active session */}
-            {stage !== 'welcome' && (
+            {/* Back Button when in Settings */}
+            {stage === 'settings' ? (
+              <button
+                type="button"
+                onClick={closeSettings}
+                title="Back to Practice"
+                className="flex items-center gap-1 rounded-xl border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-bold text-sky-800 hover:bg-sky-100 transition shadow-sm"
+              >
+                <ArrowLeft className="h-3.5 w-3.5 text-sky-600" />
+                <span>Back</span>
+              </button>
+            ) : stage !== 'welcome' ? (
               <button
                 type="button"
                 onClick={handleReturnHome}
@@ -822,7 +844,7 @@ export default function App() {
                 <Home className="h-3.5 w-3.5 text-sky-600" />
                 <span>Home</span>
               </button>
-            )}
+            ) : null}
 
             {/* Active Speller Profile Switcher Badge */}
             <button
@@ -844,11 +866,18 @@ export default function App() {
             {/* Settings & Tools Button */}
             <button
               onClick={() => {
-                setSettingsInitialTab('phonemes');
-                setShowSettings(true);
+                if (stage === 'settings') {
+                  closeSettings();
+                } else {
+                  openSettings('phonemes');
+                }
               }}
               title="Phoneme Dashboard, History CSV & Settings"
-              className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition shadow-sm"
+              className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition shadow-sm ${
+                stage === 'settings'
+                  ? 'border-sky-300 bg-sky-100 text-sky-900 ring-2 ring-sky-200'
+                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
             >
               <Settings className="h-3.5 w-3.5 text-slate-600" />
               <span className="hidden sm:inline">Settings</span>
@@ -857,8 +886,7 @@ export default function App() {
             {/* Google User Avatar / Sign Out button */}
             <button
               onClick={() => {
-                setSettingsInitialTab('account');
-                setShowSettings(true);
+                openSettings('account');
               }}
               className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 p-1 sm:px-2 sm:py-1 hover:bg-slate-100 transition"
               title={`Signed in as ${currentUser.email} (${isAdmin ? 'Admin' : 'Approved Speller'})`}
@@ -1495,21 +1523,23 @@ export default function App() {
             </div>
           </div>
         )}
-      </main>
 
-      {/* Settings Modal (Phoneme Dashboard, History CSV, Account, API Key) */}
-      <SettingsModal
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        onKeyChange={(has) => setHasCustomKey(has)}
-        profile={profile}
-        profiles={profiles}
-        currentUser={currentUser}
-        isAdmin={isAdmin}
-        onResetProfile={handleResetProfile}
-        onSignOut={handleSignOut}
-        initialTab={settingsInitialTab}
-      />
+        {/* STAGE 5: SETTINGS & TOOLS FULL PAGE */}
+        {stage === 'settings' && (
+          <SettingsModal
+            isOpen={true}
+            onClose={closeSettings}
+            onKeyChange={(has) => setHasCustomKey(has)}
+            profile={profile}
+            profiles={profiles}
+            currentUser={currentUser}
+            isAdmin={isAdmin}
+            onResetProfile={handleResetProfile}
+            onSignOut={handleSignOut}
+            initialTab={settingsInitialTab}
+          />
+        )}
+      </main>
 
       {/* Speller Profiles Modal (Switch & Edit Spellers) */}
       <ProfileModal

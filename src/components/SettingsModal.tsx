@@ -23,6 +23,7 @@ import {
   Star,
   Award,
   TrendingUp,
+  ArrowLeft,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -72,6 +73,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   initialTab = 'phonemes',
 }) => {
   const [activeTab, setActiveTab] = useState<'phonemes' | 'history' | 'account' | 'api'>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // API Key state
   const [apiKey, setApiKey] = useState('');
@@ -318,80 +323,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     filteredHistory.length > 0 ? Math.round((totalCorrect / filteredHistory.length) * 100) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2 sm:p-4 backdrop-blur-sm overflow-y-auto">
-      <div className="relative my-6 w-full max-w-3xl rounded-3xl border-2 border-sky-200 bg-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 bg-slate-50/70">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-500 text-white shadow-sm">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-slate-800">SpellBuddy Settings & Tools</h3>
-              <p className="text-xs text-slate-500">
-                Phoneme analytics, word logs, Google account & API preferences
-              </p>
-            </div>
-          </div>
+    <div className="w-full max-w-4xl mx-auto rounded-3xl border-2 border-sky-200 bg-white shadow-xl overflow-hidden flex flex-col mb-12">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 sm:px-6 py-4 bg-slate-50/70">
+        <div className="flex items-center gap-2.5 sm:gap-3">
           <button
             onClick={onClose}
-            className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 transition"
-            aria-label="Close"
+            className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 transition shadow-sm"
+            title="Back to Practice"
           >
-            <X className="h-5 w-5" />
+            <ArrowLeft className="h-4 w-4 text-slate-600" />
+            <span className="hidden sm:inline">Back</span>
           </button>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-sky-500 text-white shadow-sm">
+            <Sparkles className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-lg sm:text-xl font-bold text-slate-800 leading-tight">
+              SpellBuddy Settings & Tools
+            </h3>
+            <p className="text-[11px] sm:text-xs text-slate-500 hidden sm:block">
+              Phoneme analytics, word logs, Google account & API preferences
+            </p>
+          </div>
         </div>
+        <button
+          onClick={onClose}
+          className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 transition"
+          aria-label="Close"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
 
-        {/* Tab Strip */}
-        <div className="flex border-b border-slate-200 bg-white px-6 overflow-x-auto gap-2">
-          <button
-            onClick={() => setActiveTab('phonemes')}
-            className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
-              activeTab === 'phonemes'
-                ? 'border-sky-500 text-sky-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <BarChart3 className="h-4 w-4" />
-            Phoneme Dashboard
-          </button>
-          <button
-            onClick={() => setActiveTab('history')}
-            className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
-              activeTab === 'history'
-                ? 'border-sky-500 text-sky-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <FileSpreadsheet className="h-4 w-4" />
-            Word History & CSV
-          </button>
-          <button
-            onClick={() => setActiveTab('account')}
-            className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
-              activeTab === 'account'
-                ? 'border-sky-500 text-sky-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <UserIcon className="h-4 w-4" />
-            Account & Access
-          </button>
-          <button
-            onClick={() => setActiveTab('api')}
-            className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
-              activeTab === 'api'
-                ? 'border-sky-500 text-sky-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Key className="h-4 w-4" />
-            Gemini API Key
-          </button>
-        </div>
+      {/* Tab Strip */}
+      <div className="flex border-b border-slate-200 bg-white px-4 sm:px-6 overflow-x-auto gap-2">
+        <button
+          onClick={() => setActiveTab('phonemes')}
+          className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
+            activeTab === 'phonemes'
+              ? 'border-sky-500 text-sky-600'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <BarChart3 className="h-4 w-4" />
+          Phoneme Dashboard
+        </button>
+        <button
+          onClick={() => setActiveTab('history')}
+          className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
+            activeTab === 'history'
+              ? 'border-sky-500 text-sky-600'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <FileSpreadsheet className="h-4 w-4" />
+          Word History & CSV
+        </button>
+        <button
+          onClick={() => setActiveTab('account')}
+          className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
+            activeTab === 'account'
+              ? 'border-sky-500 text-sky-600'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <UserIcon className="h-4 w-4" />
+          Account & Access
+        </button>
+        <button
+          onClick={() => setActiveTab('api')}
+          className={`flex items-center gap-2 border-b-2 py-3 px-3 text-xs sm:text-sm font-bold whitespace-nowrap transition ${
+            activeTab === 'api'
+              ? 'border-sky-500 text-sky-600'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Key className="h-4 w-4" />
+          Gemini API Key
+        </button>
+      </div>
 
-        {/* Modal Scrollable Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1">
+      {/* Body */}
+      <div className="p-4 sm:p-6 space-y-6">
           {/* TAB 1: Phoneme Dashboard */}
           {activeTab === 'phonemes' && (
             <div className="space-y-6">
@@ -1152,17 +1166,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             </div>
           )}
-        </div>
+      </div>
 
-        {/* Footer */}
-        <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-3 flex justify-end">
-          <button
-            onClick={onClose}
-            className="rounded-xl bg-slate-800 px-5 py-2 text-xs font-bold text-white hover:bg-slate-900 transition"
-          >
-            Done
-          </button>
-        </div>
+      {/* Footer */}
+      <div className="border-t border-slate-100 bg-slate-50/50 px-4 sm:px-6 py-3.5 flex items-center justify-between">
+        <button
+          onClick={onClose}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 transition shadow-sm"
+        >
+          <ArrowLeft className="h-3.5 w-3.5 text-slate-600" />
+          Back to Practice
+        </button>
+        <button
+          onClick={onClose}
+          className="rounded-xl bg-slate-800 px-6 py-2 text-xs font-bold text-white hover:bg-slate-900 transition shadow-sm"
+        >
+          Done
+        </button>
       </div>
     </div>
   );
