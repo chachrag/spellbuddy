@@ -39,7 +39,24 @@ function getValidVoice(requestedVoice?: string): string {
   return 'Puck';
 }
 
-import { getCuratedWords } from './wordsData.ts';
+import {
+  EXPANSIVE_WORDS_BY_LEVEL,
+  getCuratedWords,
+  getRandomSessionTheme,
+  getTotalWordBankCount,
+} from './wordsData.ts';
+
+// Server-side in-memory TTS audio cache (bounded to 1,500 entries, ~25 MB max RAM)
+const serverTtsCache = new Map<string, { audio: string; format: string }>();
+const MAX_SERVER_TTS_CACHE = 1500;
+
+function setServerTtsCache(key: string, value: { audio: string; format: string }) {
+  if (serverTtsCache.size >= MAX_SERVER_TTS_CACHE) {
+    const oldestKey = serverTtsCache.keys().next().value;
+    if (oldestKey) serverTtsCache.delete(oldestKey);
+  }
+  serverTtsCache.set(key, value);
+}
 
 // 0. Verify / Test user's personal Gemini API key
 app.post('/api/spelling/test-key', async (req, res) => {
@@ -55,7 +72,7 @@ app.post('/api/spelling/test-key', async (req, res) => {
       contents: 'Respond with the word OK.',
     });
     if (response.text) {
-      return res.json({ valid: true, message: 'API key is valid and connected to gemini-2.5-flash!' });
+      return res.json({ valid: true, message: 'API key is valid and connected to Gemini Flash!' });
     }
     return res.status(400).json({ valid: false, error: 'Empty response from Gemini API.' });
   } catch (err: unknown) {
@@ -64,34 +81,32 @@ app.post('/api/spelling/test-key', async (req, res) => {
   }
 });
 
-// 1. Generate 10 spelling words tailored to the child (Randomized every session)
+// 1. Generate 10 spelling words tailored to the child (Zero-token 600-word database by default)
 app.post('/api/spelling/generate', async (req, res) => {
   const profile = req.body?.profile || {};
-  const requestedLevel = profile.difficultyLevel || 2;
-  const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
-  const client = getGenAIClient(customKey);
+  const useAI = req.body?.useAI === true;
+  const requestedLevel = Math.min(Math.max(Number(profile.difficultyLevel) || 2, 1), 5);
   const masteredWords: string[] = profile.masteredWords || [];
   const masteredSet = new Set(masteredWords.map((w) => w.toLowerCase().trim()));
+  const sessionTheme = getRandomSessionTheme();
 
-  const randomThemes = [
-    'animals and wildlife',
-    'space and astronomy',
-    'ocean exploration and marine life',
-    'nature, forests, and weather',
-    'sports, games, and active adventures',
-    'science, discovery, and inventions',
-    'cooking, garden foods, and celebrations',
-    'castles, mysteries, and quests',
-    'music, sounds, and creative arts',
-    'transportation and community helpers',
-    'rainforest mysteries and exotic birds',
-    'deep sea submarines and sunken ships',
-    'ancient pyramids and archaeology',
-    'mountains, caves, and rock climbing',
-    'robots, flying machines, and gadgets',
-  ];
-  const sessionTheme = randomThemes[Math.floor(Math.random() * randomThemes.length)];
-  const sessionSalt = Math.floor(Math.random() * 1000000);
+  // Check how many unmastered words remain in the pre-populated bank for this level
+  const levelPool = EXPANSIVE_WORDS_BY_LEVEL[requestedLevel] || EXPANSIVE_WORDS_BY_LEVEL[2] || [];
+  const unmasteredInBank = levelPool.filter((w) => !masteredSet.has(w.word.toLowerCase()));
+
+  // Default: Serve directly from the 600-word pre-populated bank (0 Gemini tokens!)
+  // Only invoke Gemini AI if explicitly requested (useAI: true) or if child mastered the entire level bank
+  if (!useAI && unmasteredInBank.length >= 10) {
+    return res.json({
+      words: getCuratedWords(requestedLevel, profile.struggledWords, masteredWords),
+      source: 'adaptive_bank',
+      theme: sessionTheme,
+      bankTotal: getTotalWordBankCount(),
+    });
+  }
+
+  const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
+  const client = getGenAIClient(customKey);
 
   try {
     if (!client) {
@@ -99,10 +114,11 @@ app.post('/api/spelling/generate', async (req, res) => {
         words: getCuratedWords(requestedLevel, profile.struggledWords, masteredWords),
         source: 'adaptive_bank',
         theme: sessionTheme,
+        bankTotal: getTotalWordBankCount(),
       });
     }
 
-    // Only repeat struggled words that have NOT yet been mastered
+    const sessionSalt = Math.floor(Math.random() * 1000000);
     const eligibleStruggled = (profile.struggledWords || []).filter(
       (w: string) => !masteredSet.has(w.toLowerCase().trim())
     );
@@ -168,7 +184,6 @@ For each of the 10 words, provide:
         },
       });
     } catch {
-      // Try fallback model if primary alias encountered an issue
       response = await client.models.generateContent({
         model: FALLBACK_FLASH_MODEL,
         contents: prompt,
@@ -207,12 +222,10 @@ For each of the 10 words, provide:
     const parsed = JSON.parse(jsonText);
     const list = Array.isArray(parsed) ? parsed : parsed.words;
     if (Array.isArray(list) && list.length > 0) {
-      // Filter out any accidental mastered words that AI might have included
       const filtered = list.filter((item) => !masteredSet.has(item.word.toLowerCase().trim()));
       if (filtered.length >= 10) {
         return res.json({ words: filtered.slice(0, 10), source: 'ai', theme: sessionTheme });
       }
-      // If needed, backfill with curated non-mastered words
       const backfill = getCuratedWords(requestedLevel, profile.struggledWords, masteredWords);
       const existing = new Set(filtered.map((w) => w.word.toLowerCase()));
       for (const item of backfill) {
@@ -230,7 +243,6 @@ For each of the 10 words, provide:
       theme: sessionTheme,
     });
   } catch {
-    // Seamless fallback on quota/prepayment or network issues
     return res.json({
       words: getCuratedWords(requestedLevel, profile.struggledWords, masteredWords),
       source: 'adaptive_bank',
@@ -241,9 +253,7 @@ For each of the 10 words, provide:
 
 function cleanSpokenText(input: string): string {
   let cleaned = input.trim();
-  // Strip leading meta-prompts like 'Speaking in a warm...', 'Speak in a warm...', 'Speak slowly...', etc.
   cleaned = cleaned.replace(/^(?:Speaking|Speak)\s+(?:in\s+a\s+[^:,\.\n]+|slowly[^:,\.\n]*|kindly[^:,\.\n]*)[,:.\s-]*/i, '');
-  // Strip outer quotes if any
   cleaned = cleaned.replace(/^["']|["']$/g, '').trim();
   return cleaned;
 }
@@ -275,16 +285,33 @@ async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   }
 }
 
-// 2. Text-to-Speech audio generation via Gemini TTS or Natural Studio Speech
+// 2. Text-to-Speech audio generation (Zero-Token Cached Natural Studio MP3 by default, Gemini TTS optional)
 app.post('/api/spelling/tts', async (req, res) => {
-  const { prompt, text, voice } = req.body;
+  const { prompt, text, voice, useGeminiTts = false } = req.body;
   const rawText = prompt || text;
   if (!rawText) {
     return res.status(400).json({ error: 'No text provided for TTS.' });
   }
   const textToSpeak = cleanSpokenText(rawText);
+  const cacheKey = `${useGeminiTts ? getValidVoice(voice) : 'studio'}:${textToSpeak.toLowerCase()}`;
 
-  // 1. Try Gemini Flash Native TTS if key configured
+  // 0. Check server in-memory TTS cache first
+  const cached = serverTtsCache.get(cacheKey);
+  if (cached) {
+    return res.json({ audio: cached.audio, format: cached.format, cached: true });
+  }
+
+  // 1. Default Zero-Token Path: Compact Natural Studio MP3 (~15-20 KB, fits easily in Firestore free tier)
+  if (!useGeminiTts) {
+    const naturalAudio = await fetchNaturalStudioSpeech(textToSpeak);
+    if (naturalAudio) {
+      const entry = { audio: naturalAudio, format: 'audio/mp3' };
+      setServerTtsCache(cacheKey, entry);
+      return res.json({ ...entry, cached: false });
+    }
+  }
+
+  // 2. Optional or Fallback Gemini Flash Native TTS
   const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
   const client = getGenAIClient(customKey);
   if (client) {
@@ -332,24 +359,57 @@ app.post('/api/spelling/tts', async (req, res) => {
       const base64Audio =
         response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       if (base64Audio) {
-        return res.json({ audio: base64Audio });
+        const entry = { audio: base64Audio, format: 'audio/pcm' };
+        setServerTtsCache(cacheKey, entry);
+        return res.json({ ...entry, cached: false });
       }
     } catch {
-      // Seamless fallback on quota or temporary service busy
+      // Fallback to studio speech if Gemini TTS fails
     }
   }
 
-  // 2. High-fidelity Natural Studio Human Voice fallback (pure human speech, zero robotic artifacts)
-  const naturalAudio = await fetchNaturalStudioSpeech(textToSpeak);
-  if (naturalAudio) {
-    return res.json({ audio: naturalAudio, format: 'audio/mp3' });
+  // 3. Final fallback to Natural Studio Speech if Gemini TTS was requested and failed
+  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
+  if (naturalFallback) {
+    const entry = { audio: naturalFallback, format: 'audio/mp3' };
+    setServerTtsCache(cacheKey, entry);
+    return res.json({ ...entry, cached: false });
   }
 
   return res.json({ audio: null, error: 'Could not generate speech audio.' });
 });
 
-// Free neural TTS endpoint - safely delegates to browser speech or Gemini TTS
-app.post('/api/free-neural-tts', (req, res) => {
+// 2b. Batch Pre-Create TTS Audio for a list of words (0 Gemini tokens, compact MP3s for Firestore caching)
+app.post('/api/spelling/tts-batch', async (req, res) => {
+  const items: Array<{ word: string; exampleSentence: string }> = Array.isArray(req.body?.items)
+    ? req.body.items.slice(0, 25)
+    : [];
+
+  const generated: Record<string, { audio: string; format: string }> = {};
+  for (const item of items) {
+    if (!item?.word) continue;
+    const cleanWord = item.word.toLowerCase().trim();
+    const textToSpeak = `${cleanWord}. ${item.exampleSentence || ''}. Spell ${cleanWord}.`;
+    const cacheKey = `studio:${textToSpeak.toLowerCase()}`;
+
+    let entry = serverTtsCache.get(cacheKey);
+    if (!entry) {
+      const audio = await fetchNaturalStudioSpeech(textToSpeak);
+      if (audio) {
+        entry = { audio, format: 'audio/mp3' };
+        setServerTtsCache(cacheKey, entry);
+      }
+    }
+    if (entry) {
+      generated[cleanWord] = entry;
+    }
+  }
+
+  return res.json({ generated, count: Object.keys(generated).length });
+});
+
+// Free neural TTS endpoint - safely delegates to browser speech or studio TTS
+app.post('/api/free-neural-tts', (_req, res) => {
   return res.json({ audio: null, message: 'Browser speech synthesis is active.' });
 });
 

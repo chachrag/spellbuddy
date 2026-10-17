@@ -256,11 +256,10 @@ export default function App() {
     }
   };
 
-  const playWordAudio = async (wordItem: WordItem, index: number, voice = selectedVoice) => {
-    const wordNumber = index + 1;
-    const promptDirection = `Word number ${wordNumber}: ${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
-    const fallbackText = `Word number ${wordNumber}: ${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
-    const cacheKey = `word-${wordNumber}-${wordItem.word}`;
+  const playWordAudio = async (wordItem: WordItem, _index: number, voice = selectedVoice) => {
+    const promptDirection = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
+    const fallbackText = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
+    const cacheKey = `word_${wordItem.word.toLowerCase().trim()}`;
 
     setSpeakingMode('word');
     await speakWithGeminiTTS(
@@ -279,36 +278,26 @@ export default function App() {
     playWordAudio(current, currentIndex);
   };
 
-  const handleRevealSpelling = async () => {
-    unlockAudioOnIOS();
+  const handleRevealSpelling = () => {
+    stopCurrentAudio();
+    setSpeakingMode('none');
     setRevealedIndices((prev) => ({ ...prev, [currentIndex]: true }));
-    const current = words[currentIndex];
-    if (!current) return;
-
-    const spelledOut = current.word.toUpperCase().split('').join(' - ');
-    const promptDirection = `${current.word} is spelled: ${spelledOut}. Write ${current.word} on your paper so your hand remembers it!`;
-    const fallbackText = `${current.word} is spelled: ${spelledOut}.`;
-    const cacheKey = `reveal-${currentIndex + 1}-${current.word}`;
-
-    setSpeakingMode('reveal');
-    await speakWithGeminiTTS(
-      promptDirection,
-      fallbackText,
-      cacheKey,
-      selectedVoice,
-      () => setSpeakingMode('none')
-    );
   };
 
-  const startNewRound = async (customProfile?: KidProfile) => {
+  const startNewRound = async (customProfile?: KidProfile, forceNew = false) => {
     setErrorMsg(null);
-    setLoadingWords(true);
     setGradingResponse(null);
     setCapturedImage(null);
     setRevealedIndices({});
     setCurrentIndex(0);
     stopCurrentAudio();
 
+    if (stage === 'welcome' && !forceNew && !customProfile && words.length === 10) {
+      setStage('round');
+      return;
+    }
+
+    setLoadingWords(true);
     try {
       const targetProf = customProfile || profile;
       const res = await generateSpellingRoundWithMeta(targetProf);
@@ -985,7 +974,7 @@ export default function App() {
               </span>
               <span className="text-slate-300">•</span>
               <span className="text-[11px] font-semibold text-slate-600">
-                {roundSource === 'ai' ? '🤖 Live AI Generation' : '🎲 250+ Adaptive Phonics Bank'}
+                {roundSource === 'ai' ? '🤖 Live AI Generation' : '🎲 600-Word Adaptive Phonics Bank (Zero-Token)'}
               </span>
             </div>
 
@@ -1092,7 +1081,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
-                    startNewRound();
+                    startNewRound(undefined, true);
                   }}
                   disabled={loadingWords}
                   className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 transition shadow-sm"

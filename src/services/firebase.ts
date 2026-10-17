@@ -20,7 +20,7 @@ import {
   orderBy,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { KidProfile, WordHistoryRecord, ApprovedUser } from '../types';
+import { KidProfile, WordHistoryRecord, ApprovedUser, WordItem } from '../types';
 
 export const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -357,3 +357,93 @@ export async function removeApprovedUserEmail(email: string): Promise<void> {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
+
+/**
+ * Fetches pre-created TTS audio Base64 from Firestore /tts_cache/{wordKey} if available.
+ */
+export async function getCachedTtsFromFirestore(wordKey: string): Promise<string | null> {
+  if (!auth.currentUser) return null;
+  const cleanKey = wordKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 64);
+  try {
+    const snap = await getDoc(doc(db, 'tts_cache', cleanKey));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (typeof data?.audio === 'string' && data.audio.length > 0) {
+        return data.audio;
+      }
+    }
+  } catch {
+    // Non-fatal: fall through to local/server TTS
+  }
+  return null;
+}
+
+/**
+ * Saves compact MP3 Base64 TTS audio to Firestore /tts_cache/{wordKey} so all future sessions use 0 TTS calls.
+ * Respects Firestore schema limits (audio <= 200,000 chars).
+ */
+export async function saveCachedTtsToFirestore(
+  wordKey: string,
+  word: string,
+  voice: string,
+  audioBase64: string,
+  format = 'audio/mp3'
+): Promise<void> {
+  if (!auth.currentUser || !audioBase64 || audioBase64.length > 195000) return;
+  const cleanKey = wordKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 64);
+  try {
+    const docRef = doc(db, 'tts_cache', cleanKey);
+    await setDoc(docRef, {
+      word: word.toLowerCase().trim().slice(0, 64),
+      voice: voice.slice(0, 32),
+      audio: audioBase64,
+      format: format.slice(0, 32),
+      createdAt: new Date().toISOString(),
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Admin: Seeds a difficulty level's word list into Firestore /word_bank/level_{level}.
+ */
+export async function seedWordBankLevelToFirestore(
+  level: number,
+  words: WordItem[]
+): Promise<void> {
+  const clamped = Math.min(Math.max(level, 1), 5);
+  const docId = `level_${clamped}`;
+  const path = `word_bank/${docId}`;
+  try {
+    const docRef = doc(db, 'word_bank', docId);
+    await setDoc(docRef, {
+      level: clamped,
+      words: words.slice(0, 250),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Loads a difficulty level's word bank from Firestore /word_bank/level_{level} if seeded.
+ */
+export async function loadWordBankLevelFromFirestore(level: number): Promise<WordItem[] | null> {
+  if (!auth.currentUser) return null;
+  const clamped = Math.min(Math.max(level, 1), 5);
+  try {
+    const snap = await getDoc(doc(db, 'word_bank', `level_${clamped}`));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (Array.isArray(data?.words) && data.words.length >= 10) {
+        return data.words as WordItem[];
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  return null;
+}
+

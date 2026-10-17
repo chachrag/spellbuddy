@@ -23,6 +23,11 @@
    - Only authenticated administrators (`gaurav.ssc@gmail.com` or users with `role == 'admin'`) can create, modify, or delete entries in `/approved_users`.
    - Any authenticated user can read their own entry in `/approved_users` to verify their access status.
 
+6. **Pre-Populated Word Bank & TTS Audio Cache (`/word_bank/{levelId}` & `/tts_cache/{wordKey}`)**:
+   - Any signed-in user can read `/word_bank/{levelId}` and `/tts_cache/{wordKey}`.
+   - Only administrators can write or delete `/word_bank/{levelId}` documents (`level` 1–5, `words` list <= 250 items).
+   - Signed-in users can create or update `/tts_cache/{wordKey}` entries only if the payload strictly conforms to bounded TTS schema (`word` <= 64 chars, `voice` <= 32 chars, `audio` string <= 200,000 chars); only admins can delete `/tts_cache/{wordKey}` entries.
+
 ---
 
 ## 2. The "Dirty Dozen" Malicious Payloads

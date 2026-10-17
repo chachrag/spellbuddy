@@ -1,9 +1,65 @@
 import { KidProfile, RoundGradingResponse, WordItem } from '../types';
-import { getRandomSpellingWords } from '../wordBank';
+import { getRandomSpellingWords, getRandomSessionTheme } from '../wordBank';
+import { getCachedTtsFromFirestore, saveCachedTtsToFirestore } from './firebase';
 
 export type StudioVoice = 'Puck' | 'Kore' | 'Aoede' | 'PuckAdult';
 
 const CUSTOM_KEY_STORAGE = 'spellbuddy_custom_gemini_api_key';
+const IDB_NAME = 'spellbuddy_tts_idb_v1';
+const IDB_STORE = 'tts_audio';
+
+function openTtsIdb(): Promise<IDBDatabase | null> {
+  if (typeof window === 'undefined' || !('indexedDB' in window)) {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      const req = window.indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function getIdbAudio(key: string): Promise<string | null> {
+  const db = await openTtsIdb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(typeof req.result === 'string' ? req.result : null);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function setIdbAudio(key: string, base64Audio: string): Promise<void> {
+  const db = await openTtsIdb();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      const store = tx.objectStore(IDB_STORE);
+      store.put(base64Audio, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
 
 export function getCustomApiKey(): string {
   if (typeof window === 'undefined') return '';
@@ -123,7 +179,7 @@ function decodeBase64PCMToAudioBuffer(base64Data: string, ctx: AudioContext): Au
 }
 
 /**
- * Decodes audio data, supporting both standard WAV containers and headerless raw PCM.
+ * Decodes audio data, supporting both standard MP3/WAV containers and headerless raw PCM.
  */
 async function decodeAudioDataOrPCM(base64Data: string, ctx: AudioContext): Promise<AudioBuffer> {
   const binaryString = window.atob(base64Data);
@@ -172,80 +228,102 @@ export function onTTSError(listener: TTSErrorListener): () => void {
   };
 }
 
-function notifyTTSError(message: string): void {
-  ttsErrorListeners.forEach((fn) => {
-    try {
-      fn(message);
-    } catch {
-      // Ignore listener error
-    }
-  });
-}
-
 /**
- * Fetches and caches an AudioBuffer for a specific cacheKey and voice.
- * Tries Gemini TTS first, and automatically falls back to Free Microsoft Edge Neural voices on 402/429/errors.
+ * Fetches and caches an AudioBuffer for a specific cacheKey.
+ * Uses a 4-layer zero-token cache hierarchy:
+ * 1. In-memory AudioBuffer cache (0ms)
+ * 2. Browser IndexedDB persistent cache (0 network / 0 Firestore reads)
+ * 3. Firestore /tts_cache/{wordKey} shared pre-created audio
+ * 4. Server /api/spelling/tts (0-token Studio MP3 speech), then persists to IndexedDB + Firestore
  */
 async function getOrFetchTTSBuffer(
   promptDirection: string,
   cacheKey: string,
   voiceName: StudioVoice
 ): Promise<AudioBuffer> {
-  const fullKey = `${voiceName}:${cacheKey}`;
+  const normalizedWordKey = cacheKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
 
-  const cached = audioBufferCache.get(fullKey);
+  const cached = audioBufferCache.get(normalizedWordKey);
   if (cached) {
     return cached;
   }
 
-  const existingInflight = inflightRequests.get(fullKey);
+  const existingInflight = inflightRequests.get(normalizedWordKey);
   if (existingInflight) {
     return existingInflight;
   }
 
   const fetchPromise = (async () => {
+    const ctx = getAudioContext();
+
+    // 1. Check client IndexedDB persistent cache
+    const localBase64 = await getIdbAudio(normalizedWordKey);
+    if (localBase64) {
+      const buffer = await decodeAudioDataOrPCM(localBase64, ctx);
+      audioBufferCache.set(normalizedWordKey, buffer);
+      inflightRequests.delete(normalizedWordKey);
+      return buffer;
+    }
+
+    // 2. Check Firestore shared pre-created TTS cache
+    const firestoreBase64 = await getCachedTtsFromFirestore(normalizedWordKey);
+    if (firestoreBase64) {
+      setIdbAudio(normalizedWordKey, firestoreBase64).catch(() => {});
+      const buffer = await decodeAudioDataOrPCM(firestoreBase64, ctx);
+      audioBufferCache.set(normalizedWordKey, buffer);
+      inflightRequests.delete(normalizedWordKey);
+      return buffer;
+    }
+
+    // 3. Fetch from server TTS endpoint (uses 0-token studio MP3 by default)
     let base64Audio: string | null = null;
-    let geminiError: string | null = null;
+    let audioFormat = 'audio/mp3';
+    let ttsError: string | null = null;
 
     const geminiVoice = voiceName === 'PuckAdult' ? 'Puck' : voiceName;
     try {
       const res = await fetch('/api/spelling/tts', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ prompt: promptDirection, voice: geminiVoice }),
+        body: JSON.stringify({ prompt: promptDirection, voice: geminiVoice, useGeminiTts: false }),
       });
 
       if (res.ok) {
         const data = await res.json();
         if (data.audio) {
           base64Audio = data.audio;
+          audioFormat = data.format || 'audio/mp3';
         } else if (data.error) {
-          geminiError = data.error;
+          ttsError = data.error;
         }
       } else {
-        geminiError = `TTS request failed (${res.status})`;
+        ttsError = `TTS request failed (${res.status})`;
       }
     } catch (e) {
-      geminiError = e instanceof Error ? e.message : 'Gemini TTS request error';
+      ttsError = e instanceof Error ? e.message : 'TTS request error';
     }
 
     if (!base64Audio) {
-      throw new Error(geminiError || 'Audio stream unavailable.');
+      throw new Error(ttsError || 'Audio stream unavailable.');
     }
 
-    const ctx = getAudioContext();
+    // Save to client IndexedDB and Firestore /tts_cache for all future sessions
+    setIdbAudio(normalizedWordKey, base64Audio).catch(() => {});
+    const targetWord = cacheKey.replace(/^word-/i, '').toLowerCase();
+    saveCachedTtsToFirestore(normalizedWordKey, targetWord, 'studio', base64Audio, audioFormat).catch(() => {});
+
     const buffer = await decodeAudioDataOrPCM(base64Audio, ctx);
-    audioBufferCache.set(fullKey, buffer);
-    inflightRequests.delete(fullKey);
+    audioBufferCache.set(normalizedWordKey, buffer);
+    inflightRequests.delete(normalizedWordKey);
     return buffer;
   })();
 
-  inflightRequests.set(fullKey, fetchPromise);
+  inflightRequests.set(normalizedWordKey, fetchPromise);
 
   try {
     return await fetchPromise;
   } catch (err) {
-    inflightRequests.delete(fullKey);
+    inflightRequests.delete(normalizedWordKey);
     throw err;
   }
 }
@@ -407,15 +485,67 @@ export function playWithBrowserSpeech(
 }
 
 /**
- * Background prefetching is disabled to prevent 429 rate-limit errors on the free tier.
- * Audio is generated strictly on-demand when clicked and cached in AudioBuffer for instant replay.
+ * Silently pre-creates and caches MP3 TTS audio for a list of words (0 Gemini tokens)
+ * into client IndexedDB and Firestore /tts_cache so "Play Word" is instantaneous.
  */
-export function prefetchWordAudio(
-  _wordItem: WordItem,
-  _wordNumber: number,
-  _voiceName: StudioVoice
-): void {
-  // On-demand generation only
+export async function prewarmRoundAudio(words: WordItem[]): Promise<number> {
+  if (typeof window === 'undefined' || !Array.isArray(words) || words.length === 0) return 0;
+
+  const missingItems: Array<{ word: string; exampleSentence: string; key: string }> = [];
+
+  for (const w of words) {
+    const cleanWord = w.word.toLowerCase().trim();
+    const key = `word_${cleanWord}`;
+    if (audioBufferCache.has(key)) continue;
+
+    const idbHit = await getIdbAudio(key);
+    if (idbHit) continue;
+
+    const fsHit = await getCachedTtsFromFirestore(key);
+    if (fsHit) {
+      await setIdbAudio(key, fsHit);
+      continue;
+    }
+
+    missingItems.push({
+      word: cleanWord,
+      exampleSentence: w.exampleSentence,
+      key,
+    });
+  }
+
+  if (missingItems.length === 0) return words.length;
+
+  let cachedCount = words.length - missingItems.length;
+  try {
+    const res = await fetch('/api/spelling/tts-batch', {
+      method: 'POST',
+      headers: getRequestHeaders(),
+      body: JSON.stringify({
+        items: missingItems.map((m) => ({
+          word: m.word,
+          exampleSentence: m.exampleSentence,
+        })),
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const generated: Record<string, { audio: string; format: string }> = data.generated || {};
+      for (const m of missingItems) {
+        const item = generated[m.word];
+        if (item?.audio) {
+          cachedCount += 1;
+          await setIdbAudio(m.key, item.audio);
+          saveCachedTtsToFirestore(m.key, m.word, 'studio', item.audio, item.format || 'audio/mp3').catch(() => {});
+        }
+      }
+    }
+  } catch {
+    // Non-fatal background prewarm
+  }
+
+  return cachedCount;
 }
 
 export interface RoundGenerationResult {
@@ -426,25 +556,49 @@ export interface RoundGenerationResult {
 
 /**
  * Generates 10 adaptive spelling words tailored to the child's current difficulty level
- * and mixes in struggled words from previous rounds. Words are truly randomized every session.
- * Returns word list and generation metadata (AI vs adaptive bank, session theme).
+ * from the 600-word pre-populated database (0 AI tokens by default) and mixes in struggled words.
+ * Also pre-warms TTS audio in the background so playback is instant.
  */
-export async function generateSpellingRoundWithMeta(profile: KidProfile): Promise<RoundGenerationResult> {
+export async function generateSpellingRoundWithMeta(
+  profile: KidProfile,
+  options?: { useAI?: boolean }
+): Promise<RoundGenerationResult> {
+  const useAI = options?.useAI === true;
+
+  // Fast path: When not explicitly requesting live AI generation, serve directly from the 600-word curated bank
+  if (!useAI) {
+    const curatedWords = getRandomSpellingWords(
+      profile.difficultyLevel || 2,
+      profile.struggledWords || [],
+      profile.masteredWords || []
+    );
+    const theme = getRandomSessionTheme();
+    // Pre-create / warm TTS audio in the background (0 Gemini tokens)
+    prewarmRoundAudio(curatedWords).catch(() => {});
+    return {
+      words: curatedWords,
+      source: 'adaptive_bank',
+      theme,
+    };
+  }
+
   try {
     const res = await fetch('/api/spelling/generate', {
       method: 'POST',
       headers: getRequestHeaders(),
-      body: JSON.stringify({ profile }),
+      body: JSON.stringify({ profile, useAI: true }),
     });
 
     if (res.ok) {
       const data = await res.json();
       const list: WordItem[] = Array.isArray(data) ? data : data.words;
       if (Array.isArray(list) && list.length > 0) {
+        const selected = list.slice(0, 10);
+        prewarmRoundAudio(selected).catch(() => {});
         return {
-          words: list.slice(0, 10),
+          words: selected,
           source: data.source === 'ai' ? 'ai' : 'adaptive_bank',
-          theme: data.theme,
+          theme: data.theme || getRandomSessionTheme(),
         };
       }
     }
@@ -452,21 +606,22 @@ export async function generateSpellingRoundWithMeta(profile: KidProfile): Promis
     console.warn('API generate round failed, using randomized fallback bank:', err);
   }
 
-  // Purely randomized Fisher-Yates word generation across all 5 levels excluding mastered words
   const fallbackList = getRandomSpellingWords(
     profile.difficultyLevel || 2,
     profile.struggledWords || [],
     profile.masteredWords || []
   );
+  prewarmRoundAudio(fallbackList).catch(() => {});
   return {
     words: fallbackList,
     source: 'adaptive_bank',
+    theme: getRandomSessionTheme(),
   };
 }
 
 /**
- * Generates 10 adaptive spelling words tailored to an child's current difficulty level
- * and mixes in struggled words from previous rounds. Words are truly randomized every session.
+ * Generates 10 adaptive spelling words tailored to a child's current difficulty level
+ * and mixes in struggled words from previous rounds.
  */
 export async function generateSpellingRound(profile: KidProfile): Promise<WordItem[]> {
   const result = await generateSpellingRoundWithMeta(profile);

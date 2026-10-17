@@ -189,6 +189,58 @@
         }
       },
       "required": ["email", "role"]
+    },
+    "WordBankLevel": {
+      "title": "WordBankLevel",
+      "description": "Pre-populated spelling word bank for a specific difficulty level (1-5)",
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "number",
+          "description": "Difficulty level from 1 to 5"
+        },
+        "words": {
+          "type": "array",
+          "description": "Array of curated WordItem objects for this level"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["level", "words"]
+    },
+    "TtsAudioCache": {
+      "title": "TtsAudioCache",
+      "description": "Pre-created compressed MP3 TTS audio clip for a spelling word",
+      "type": "object",
+      "properties": {
+        "word": {
+          "type": "string",
+          "description": "Target spelling word in lowercase",
+          "maxLength": 64
+        },
+        "voice": {
+          "type": "string",
+          "description": "Voice identifier",
+          "maxLength": 32
+        },
+        "audio": {
+          "type": "string",
+          "description": "Base64-encoded compressed MP3 audio data",
+          "maxLength": 200000
+        },
+        "format": {
+          "type": "string",
+          "description": "Audio MIME format (audio/mp3)",
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp when cached"
+        }
+      },
+      "required": ["word", "voice", "audio"]
     }
   },
   "firestore": {
@@ -207,6 +259,14 @@
     "/approved_users/{emailId}": {
       "schema": { "$ref": "ApprovedUser" },
       "description": "Allowlist entries of approved email accounts managed by administrators"
+    },
+    "/word_bank/{levelId}": {
+      "schema": { "$ref": "WordBankLevel" },
+      "description": "Pre-populated word bank sharded by difficulty level (level_1 to level_5)"
+    },
+    "/tts_cache/{wordKey}": {
+      "schema": { "$ref": "TtsAudioCache" },
+      "description": "Pre-created TTS audio cache for spelling words to eliminate AI TTS token usage"
     }
   }
 }
