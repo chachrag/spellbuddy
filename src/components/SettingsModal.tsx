@@ -24,6 +24,8 @@ import {
   Award,
   TrendingUp,
   ArrowLeft,
+  Share2,
+  Users,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -58,6 +60,7 @@ interface SettingsModalProps {
   onResetProfile: () => void;
   onSignOut: () => void;
   initialTab?: 'phonemes' | 'history' | 'account' | 'api';
+  onOpenShareProfile?: (profileId: string) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -71,6 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onResetProfile,
   onSignOut,
   initialTab = 'phonemes',
+  onOpenShareProfile,
 }) => {
   const [activeTab, setActiveTab] = useState<'phonemes' | 'history' | 'account' | 'api'>(initialTab);
 
@@ -745,6 +749,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <LogOut className="h-3.5 w-3.5" />
                     Sign Out
                   </button>
+                </div>
+              </div>
+
+              {/* Active Speller Family Sharing Card */}
+              <div className="rounded-2xl border border-sky-200 bg-sky-50/50 p-5">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-2xl shadow-sm border border-slate-100">
+                      {profile.avatarEmoji || '🦊'}
+                    </span>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-bold text-slate-800 text-sm">
+                          Active Speller: {profile.name}
+                        </h4>
+                        <span className="rounded-full bg-sky-200/80 px-2 py-0.5 text-[10px] font-bold text-sky-800">
+                          Age {profile.age} • Level {profile.difficultyLevel}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        {profile.sharedWithEmails && profile.sharedWithEmails.length > 0
+                          ? `Shared with ${profile.sharedWithEmails.length} account${profile.sharedWithEmails.length > 1 ? 's' : ''}: ${profile.sharedWithEmails.join(', ')}`
+                          : profile.ownerEmail && currentUser?.email && profile.ownerEmail.toLowerCase() !== currentUser.email.toLowerCase()
+                          ? `Shared with you by ${profile.ownerEmail}`
+                          : 'Not shared with other Gmail accounts yet'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {onOpenShareProfile && (
+                    <button
+                      onClick={() => {
+                        onClose();
+                        onOpenShareProfile(profile.id);
+                      }}
+                      className="flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3.5 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100 transition shadow-xs"
+                    >
+                      <Share2 className="h-3.5 w-3.5 text-sky-600" />
+                      <span>Share & Sync Speller</span>
+                    </button>
+                  )}
                 </div>
               </div>
 

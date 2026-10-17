@@ -65,6 +65,7 @@ import {
   checkUserApproval,
   loadFirestoreSpellerProfiles,
   saveFirestoreSpellerProfile,
+  subscribeToSpellerProfile,
   logWordAttemptToFirestore,
   MASTER_ADMIN_EMAIL,
 } from './services/firebase';
@@ -86,7 +87,8 @@ export default function App() {
   });
 
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [profileModalMode, setProfileModalMode] = useState<'switch' | 'create' | 'edit'>('switch');
+  const [profileModalMode, setProfileModalMode] = useState<'switch' | 'create' | 'edit' | 'share'>('switch');
+  const [profileModalShareId, setProfileModalShareId] = useState<string | undefined>(undefined);
   const [levelFeedbackNote, setLevelFeedbackNote] = useState<string | null>(null);
 
   const selectedVoice: StudioVoice = 'Kore';
@@ -136,7 +138,7 @@ export default function App() {
 
           if (approval.isApproved) {
             // Sync speller profiles from Firestore in the background without blocking UI
-            loadFirestoreSpellerProfiles(user.uid)
+            loadFirestoreSpellerProfiles(user)
               .then((cloudProfiles) => {
                 if (cloudProfiles && cloudProfiles.length > 0) {
                   setProfiles(cloudProfiles);
@@ -149,11 +151,14 @@ export default function App() {
                   const initialWithUser: KidProfile = {
                     ...profile,
                     userId: user.uid,
+                    ownerId: user.uid,
+                    ownerEmail: user.email?.toLowerCase().trim(),
+                    collaboratorEmails: user.email ? [user.email.toLowerCase().trim()] : [],
                     masteredWords: profile.masteredWords || [],
                   };
                   setProfiles([initialWithUser]);
                   setProfile(initialWithUser);
-                  saveFirestoreSpellerProfile(user.uid, initialWithUser).catch(() => {});
+                  saveFirestoreSpellerProfile(user, initialWithUser).catch(() => {});
                 }
               })
               .catch(() => {});
@@ -187,11 +192,33 @@ export default function App() {
     setActiveProfileId(profile.id);
 
     if (currentUser?.uid && isApproved) {
-      saveFirestoreSpellerProfile(currentUser.uid, profile).catch((err) => {
+      saveFirestoreSpellerProfile(currentUser, profile).catch((err) => {
         console.warn('Failed to sync profile to Firestore:', err);
       });
     }
   }, [profile, currentUser, isApproved]);
+
+  // Real-time synchronization for shared speller profiles across family accounts
+  useEffect(() => {
+    if (!profile.id || !currentUser) return;
+    const unsubscribe = subscribeToSpellerProfile(profile.id, (cloudUpdated) => {
+      if (
+        cloudUpdated &&
+        cloudUpdated.updatedAt &&
+        cloudUpdated.updatedAt !== profile.updatedAt
+      ) {
+        setProfile((prev) => ({
+          ...prev,
+          ...cloudUpdated,
+        }));
+        setProfiles((prev) =>
+          prev.map((p) => (p.id === cloudUpdated.id ? { ...p, ...cloudUpdated } : p))
+        );
+      }
+    });
+
+    return () => unsubscribe();
+  }, [profile.id, currentUser]);
 
   // Automatically generate fresh random session words whenever active profile or difficulty level changes
   useEffect(() => {
@@ -254,6 +281,12 @@ export default function App() {
     } catch (err) {
       console.error('Sign out error:', err);
     }
+  };
+
+  const openShareProfile = (profileId?: string) => {
+    setProfileModalMode('share');
+    setProfileModalShareId(profileId || profile.id);
+    setShowProfileModal(true);
   };
 
   const getWordColor = (wordNum: number) => {
@@ -853,14 +886,21 @@ export default function App() {
                 setShowProfileModal(true);
               }}
               className="flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50/80 px-2 sm:px-2.5 py-1.5 transition hover:bg-sky-100 hover:border-sky-300"
-              title="Click to switch spellers or edit profile"
+              title="Click to switch spellers, share profile, or edit profile"
             >
               <span className="text-base sm:text-lg leading-none">{profile.avatarEmoji || '🦊'}</span>
               <div className="text-left leading-none">
                 <div className="text-xs font-bold text-sky-900">{profile.name}</div>
                 <div className="text-[9px] font-semibold text-sky-600">Lvl {profile.difficultyLevel}</div>
               </div>
-              <Users className="h-3 w-3 text-sky-500 hidden sm:inline" />
+              {profile.sharedWithEmails && profile.sharedWithEmails.length > 0 ? (
+                <span className="hidden sm:inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-800" title={`Synced with ${profile.sharedWithEmails.length} account${profile.sharedWithEmails.length > 1 ? 's' : ''}`}>
+                  <Users className="h-2.5 w-2.5" />
+                  <span>{profile.sharedWithEmails.length}</span>
+                </span>
+              ) : (
+                <Users className="h-3 w-3 text-sky-500 hidden sm:inline" />
+              )}
             </button>
 
             {/* Settings & Tools Button */}
@@ -1537,6 +1577,7 @@ export default function App() {
             onResetProfile={handleResetProfile}
             onSignOut={handleSignOut}
             initialTab={settingsInitialTab}
+            onOpenShareProfile={openShareProfile}
           />
         )}
       </main>
@@ -1547,7 +1588,9 @@ export default function App() {
         onClose={() => setShowProfileModal(false)}
         profiles={profiles}
         activeProfile={profile}
+        currentUser={currentUser}
         initialMode={profileModalMode}
+        initialShareProfileId={profileModalShareId}
         onProfileChanged={(updatedActive, all) => {
           setProfile(updatedActive);
           setProfiles(all);

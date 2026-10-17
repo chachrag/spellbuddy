@@ -35,6 +35,11 @@ export interface PhonemeStat {
 export interface KidProfile {
   id: string;
   userId?: string;
+  ownerId?: string;
+  ownerEmail?: string;
+  sharedWithEmails?: string[]; // Array of lowercase Gmail addresses
+  collaboratorEmails?: string[]; // [ownerEmail, ...sharedWithEmails] for Firestore queries
+  updatedByEmail?: string;
   name: string;
   age: number;
   avatarEmoji: string; // e.g., 🦁, 🦊, 🚀, 🐼, 🦄, 🌟, 🦖

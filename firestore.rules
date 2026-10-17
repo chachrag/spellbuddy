@@ -86,6 +86,20 @@ service cloud.firestore {
         (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50));
     }
 
+    function isValidSharedProfile(data) {
+      return data.keys().hasAll(['id', 'name', 'age', 'difficultyLevel', 'ownerId', 'ownerEmail', 'collaboratorEmails']) &&
+        data.id is string && data.id.size() <= 64 &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
+        data.age is number && data.age >= 4 && data.age <= 16 &&
+        data.difficultyLevel is number && data.difficultyLevel >= 1 && data.difficultyLevel <= 5 &&
+        data.ownerId is string && data.ownerId.size() <= 64 &&
+        data.ownerEmail is string && data.ownerEmail.size() <= 128 &&
+        data.collaboratorEmails is list && data.collaboratorEmails.size() <= 25 &&
+        (!('sharedWithEmails' in data) || (data.sharedWithEmails is list && data.sharedWithEmails.size() <= 25)) &&
+        (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 300)) &&
+        (!('masteredWords' in data) || (data.masteredWords is list && data.masteredWords.size() <= 1000));
+    }
+
     // 1. User Account Documents
     match /users/{userId} {
       allow get: if isOwner(userId) || isAdmin();
@@ -135,6 +149,47 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn() && isValidTtsCache(request.resource.data);
       allow delete: if isAdmin();
+    }
+
+    // 7. Shared Speller Profiles
+    match /shared_profiles/{profileId} {
+      allow get, list: if isSignedIn() && (
+        resource.data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.ownerEmail == request.auth.token.email.lower() ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
+        request.resource.data.ownerId == request.auth.uid ||
+        isAdmin()
+      );
+      allow update: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
+        resource.data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.ownerEmail == request.auth.token.email.lower() ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      // Subcollection: Shared Speller History Records
+      match /history/{historyId} {
+        allow get, list: if isSignedIn() && (
+          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+          isAdmin()
+        );
+        allow create: if isSignedIn() && (
+          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+          isAdmin()
+        );
+        allow update: if false;
+        allow delete: if isSignedIn() && (
+          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+      }
     }
   }
 }

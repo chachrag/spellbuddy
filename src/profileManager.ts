@@ -121,6 +121,15 @@ export function sanitizeProfile(raw: Partial<KidProfile>): KidProfile {
     recentScores: Array.isArray(raw.recentScores) ? raw.recentScores : [],
     levelRoundsCount: Number(raw.levelRoundsCount) || 0,
     consecutiveHighScores: Number(raw.consecutiveHighScores) || 0,
+    ownerId: raw.ownerId,
+    ownerEmail: raw.ownerEmail,
+    sharedWithEmails: Array.isArray(raw.sharedWithEmails)
+      ? raw.sharedWithEmails.map((e) => String(e).toLowerCase().trim())
+      : [],
+    collaboratorEmails: Array.isArray(raw.collaboratorEmails)
+      ? raw.collaboratorEmails.map((e) => String(e).toLowerCase().trim())
+      : [],
+    updatedByEmail: raw.updatedByEmail,
     updatedAt: raw.updatedAt,
   };
 }
