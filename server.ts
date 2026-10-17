@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import WebSocket from 'ws';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
@@ -366,6 +368,154 @@ async function generateGeminiTtsWav(
   return null;
 }
 
+const EDGE_TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+const EDGE_CHROMIUM_FULL_VERSION = '130.0.2849.68';
+const EDGE_SEC_MS_GEC_VERSION = `1-${EDGE_CHROMIUM_FULL_VERSION}`;
+
+function generateSecMsGec(): string {
+  let ticks = Math.floor(Date.now() / 1000) + 11644473600;
+  ticks -= ticks % 300;
+  const ticks100ns = Math.round(ticks * 1e7);
+  const strToHash = `${ticks100ns}${EDGE_TRUSTED_CLIENT_TOKEN}`;
+  return crypto.createHash('sha256').update(strToHash, 'ascii').digest('hex').toUpperCase();
+}
+
+function escapeXmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Generates studio-quality neural MP3 speech (~18-22 KB/word, 0 Gemini tokens, no RPM/RPD quota)
+ * using Microsoft Edge Read-Aloud Neural TTS (en-US-AvaNeural warm teacher voice).
+ */
+async function fetchEdgeNeuralSpeech(
+  text: string,
+  voice = 'en-US-AvaNeural'
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: string | null) => {
+      if (!settled) {
+        settled = true;
+        resolve(result);
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      try {
+        ws.close();
+      } catch {}
+      finish(null);
+    }, 8000);
+
+    const connectionId = crypto.randomBytes(16).toString('hex');
+    const requestId = crypto.randomBytes(16).toString('hex');
+    const secMsGec = generateSecMsGec();
+    const muid = crypto.randomBytes(16).toString('hex').toUpperCase();
+
+    const wsUrl =
+      `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1` +
+      `?TrustedClientToken=${EDGE_TRUSTED_CLIENT_TOKEN}` +
+      `&Sec-MS-GEC=${secMsGec}` +
+      `&Sec-MS-GEC-Version=${EDGE_SEC_MS_GEC_VERSION}` +
+      `&ConnectionId=${connectionId}`;
+
+    // Add natural teacher pacing between sentences ("word. sentence. Spell word.")
+    const pacedText = text.replace(/\.\s+/g, ' ... ');
+    const escapedText = escapeXmlText(pacedText);
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl, {
+        headers: {
+          Pragma: 'no-cache',
+          'Cache-Control': 'no-cache',
+          Origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Cookie: `muid=${muid};`,
+        },
+      });
+    } catch {
+      clearTimeout(timeout);
+      finish(null);
+      return;
+    }
+
+    const audioChunks: Buffer[] = [];
+
+    ws.on('open', () => {
+      const timestamp = new Date().toISOString();
+      const configMsg =
+        `X-Timestamp:${timestamp}\r\n` +
+        `Content-Type:application/json; charset=utf-8\r\n` +
+        `Path:speech.config\r\n\r\n` +
+        `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`;
+
+      const ssmlMsg =
+        `X-RequestId:${requestId}\r\n` +
+        `Content-Type:application/ssml+xml\r\n` +
+        `X-Timestamp:${timestamp}Z\r\n` +
+        `Path:ssml\r\n\r\n` +
+        `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
+        `<voice name='${voice}'>` +
+        `<prosody pitch='+0Hz' rate='-5%' volume='+0%'>${escapedText}</prosody>` +
+        `</voice></speak>`;
+
+      ws.send(configMsg);
+      ws.send(ssmlMsg);
+    });
+
+    ws.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+      if (isBinary) {
+        if (buf.length < 2) return;
+        const headerLen = buf.readUInt16BE(0);
+        if (buf.length > 2 + headerLen) {
+          const headerStr = buf.subarray(2, 2 + headerLen).toString('utf8');
+          if (headerStr.includes('Path:audio')) {
+            audioChunks.push(buf.subarray(2 + headerLen));
+          }
+        }
+      } else {
+        const textMsg = buf.toString('utf8');
+        if (textMsg.includes('Path:turn.end')) {
+          clearTimeout(timeout);
+          try {
+            ws.close();
+          } catch {}
+          if (audioChunks.length > 0) {
+            finish(Buffer.concat(audioChunks).toString('base64'));
+          } else {
+            finish(null);
+          }
+        }
+      }
+    });
+
+    ws.on('error', () => {
+      clearTimeout(timeout);
+      finish(null);
+    });
+
+    ws.on('close', () => {
+      clearTimeout(timeout);
+      if (audioChunks.length > 0) {
+        finish(Buffer.concat(audioChunks).toString('base64'));
+      } else {
+        finish(null);
+      }
+    });
+  });
+}
+
 async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   try {
     const chunks: Buffer[] = [];
@@ -393,7 +543,7 @@ async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   }
 }
 
-// 2. Text-to-Speech audio generation (Gemini 2.5 Flash Native TTS -> Compact WAV cached forever in Firestore)
+// 2. Text-to-Speech audio generation (Edge Neural 'en-US-AvaNeural' MP3 -> Gemini Native TTS WAV -> Studio Fallback)
 app.post('/api/spelling/tts', async (req, res) => {
   const { prompt, text, voice } = req.body;
   const rawText = prompt || text;
@@ -401,8 +551,7 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.status(400).json({ error: 'No text provided for TTS.' });
   }
   const textToSpeak = cleanSpokenText(rawText);
-  const voiceName = getValidVoice(voice);
-  const cacheKey = `gemini_v2_${voiceName}:${textToSpeak.toLowerCase()}`;
+  const cacheKey = `neural_v3_Ava:${textToSpeak.toLowerCase()}`;
 
   // 0. Check server in-memory TTS cache first
   const cached = serverTtsCache.get(cacheKey);
@@ -410,15 +559,24 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ audio: cached.audio, format: cached.format, cached: true });
   }
 
-  // 1. Primary Path: Generate once with Gemini 2.5 Flash Native TTS & encode as compact WAV for Firestore caching
+  // 1. Primary Path: Microsoft Edge Neural TTS ('en-US-AvaNeural') — 0 Gemini tokens, ~20KB MP3, unlimited quota
+  const edgeNeuralMp3 = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
+  if (edgeNeuralMp3) {
+    const entry = { audio: edgeNeuralMp3, format: 'audio/mp3' };
+    setServerTtsCache(cacheKey, entry);
+    return res.json({ ...entry, cached: false });
+  }
+
+  // 2. Secondary Path: Gemini 2.5 Flash Native TTS ('Kore') encoded as compact WAV
   const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
+  const voiceName = getValidVoice(voice);
   const geminiWav = await generateGeminiTtsWav(textToSpeak, voiceName, customKey);
   if (geminiWav) {
     setServerTtsCache(cacheKey, geminiWav);
     return res.json({ ...geminiWav, cached: false });
   }
 
-  // 2. Fallback to Studio MP3 Speech only if Gemini TTS quota is temporarily exhausted
+  // 3. Final Fallback
   const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
   if (naturalFallback) {
     return res.json({ audio: naturalFallback, format: 'audio/mp3', cached: false, isFallback: true });
@@ -427,30 +585,37 @@ app.post('/api/spelling/tts', async (req, res) => {
   return res.json({ audio: null, error: 'Could not generate speech audio.' });
 });
 
-// 2b. Batch Pre-Create TTS Audio for a list of words using Gemini Native TTS (compact WAVs for Firestore caching)
+// 2b. Batch Pre-Create TTS Audio for up to 25 words at a time using Edge Neural TTS ('en-US-AvaNeural', 0 Gemini tokens)
 app.post('/api/spelling/tts-batch', async (req, res) => {
-  const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
   const items: Array<{ word: string; exampleSentence: string }> = Array.isArray(req.body?.items)
-    ? req.body.items.slice(0, 5)
+    ? req.body.items.slice(0, 25)
     : [];
 
   const generated: Record<string, { audio: string; format: string }> = {};
-  for (const item of items) {
-    if (!item?.word) continue;
-    const cleanWord = item.word.toLowerCase().trim();
-    const textToSpeak = `${cleanWord}. ${item.exampleSentence || ''}. Spell ${cleanWord}.`;
-    const cacheKey = `gemini_v2_Kore:${textToSpeak.toLowerCase()}`;
 
-    let entry = serverTtsCache.get(cacheKey);
-    if (!entry) {
-      entry = (await generateGeminiTtsWav(textToSpeak, 'Kore', customKey)) || undefined;
-      if (entry) {
-        setServerTtsCache(cacheKey, entry);
-      }
-    }
-    if (entry) {
-      generated[cleanWord] = entry;
-    }
+  // Process in parallel chunks of 5 for fast, reliable WebSocket synthesis
+  for (let i = 0; i < items.length; i += 5) {
+    const chunk = items.slice(i, i + 5);
+    await Promise.all(
+      chunk.map(async (item) => {
+        if (!item?.word) return;
+        const cleanWord = item.word.toLowerCase().trim();
+        const textToSpeak = `${cleanWord}. ${item.exampleSentence || ''}. Spell ${cleanWord}.`;
+        const cacheKey = `neural_v3_Ava:${textToSpeak.toLowerCase()}`;
+
+        let entry = serverTtsCache.get(cacheKey);
+        if (!entry) {
+          const mp3Audio = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
+          if (mp3Audio) {
+            entry = { audio: mp3Audio, format: 'audio/mp3' };
+            setServerTtsCache(cacheKey, entry);
+          }
+        }
+        if (entry) {
+          generated[cleanWord] = entry;
+        }
+      })
+    );
   }
 
   return res.json({ generated, count: Object.keys(generated).length });

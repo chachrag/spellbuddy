@@ -335,11 +335,11 @@ async function getOrFetchTTSBase64(
       throw new Error(ttsError || 'Audio stream unavailable.');
     }
 
-    // Only persist genuine Gemini Native TTS audio permanently to IndexedDB and Firestore /tts_cache
+    // Only persist high-quality neural/Gemini TTS audio permanently to IndexedDB and Firestore /tts_cache
     if (!isFallback) {
       setIdbAudio(normalizedWordKey, base64Audio).catch(() => {});
-      const targetWord = cacheKey.replace(/^word(?:_v2)?[-_]/i, '').toLowerCase();
-      saveCachedTtsToFirestore(normalizedWordKey, targetWord, geminiVoice, base64Audio, audioFormat).catch(() => {});
+      const targetWord = cacheKey.replace(/^word(?:_v[23])?[-_]/i, '').toLowerCase();
+      saveCachedTtsToFirestore(normalizedWordKey, targetWord, 'AvaNeural', base64Audio, audioFormat).catch(() => {});
       audioBase64Cache.set(normalizedWordKey, base64Audio);
     }
 
@@ -360,7 +360,7 @@ async function getOrFetchTTSBase64(
 let geminiTtsQuotaHit = false;
 
 /**
- * Speaks text using cached Gemini Native TTS WAV audio via standard HTML5 Audio (with Web Audio fallback).
+ * Speaks text using cached Neural MP3/WAV audio via standard HTML5 Audio (with Web Audio fallback).
  * HTML5 Audio seamlessly follows macOS CoreAudio and Bluetooth (AirPods) output device routing.
  */
 export async function speakWithGeminiTTS(
@@ -532,17 +532,17 @@ export function playWithBrowserSpeech(
 }
 
 /**
- * Silently loads any existing cached Gemini TTS WAVs from IndexedDB and Firestore /tts_cache
- * (0 tokens) and pre-generates up to 2 uncached words at a time so we respect Gemini TTS RPM limits.
+ * Silently loads any existing cached Neural MP3s from IndexedDB and Firestore /tts_cache
+ * (0 tokens) and batch pre-creates up to 25 uncached words at a time via Edge Neural TTS ('en-US-AvaNeural').
  */
-export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice, maxBatchGenerate = 2): Promise<number> {
+export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice, maxBatchGenerate = 25): Promise<number> {
   if (typeof window === 'undefined' || !Array.isArray(words) || words.length === 0) return 0;
 
   const missingItems: Array<{ word: string; exampleSentence: string; key: string }> = [];
 
   for (const w of words) {
     const cleanWord = w.word.toLowerCase().trim().replace(/[^a-z0-9_-]/g, '_');
-    const key = `word_v2_${cleanWord}`;
+    const key = `word_v3_${cleanWord}`;
     if (audioBase64Cache.has(key)) continue;
 
     const idbHit = await getIdbAudio(key);
@@ -592,7 +592,7 @@ export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice,
           cachedCount += 1;
           audioBase64Cache.set(m.key, item.audio);
           await setIdbAudio(m.key, item.audio);
-          saveCachedTtsToFirestore(m.key, m.word, 'Kore', item.audio, item.format || 'audio/wav').catch(() => {});
+          saveCachedTtsToFirestore(m.key, m.word, 'AvaNeural', item.audio, item.format || 'audio/mp3').catch(() => {});
         }
       }
     }

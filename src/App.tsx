@@ -250,7 +250,7 @@ export default function App() {
   const playWordAudio = async (wordItem: WordItem, index: number, voice = selectedVoice) => {
     const promptDirection = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
     const fallbackText = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
-    const cacheKey = `word_v2_${wordItem.word.toLowerCase().trim()}`;
+    const cacheKey = `word_v3_${wordItem.word.toLowerCase().trim()}`;
 
     // Gently pre-warm the next word in the round in the background while the current word plays
     const nextWord = words[index + 1];
