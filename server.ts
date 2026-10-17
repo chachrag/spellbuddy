@@ -36,7 +36,7 @@ function getValidVoice(requestedVoice?: string): string {
   const valid = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
   if (requestedVoice && valid.includes(requestedVoice)) return requestedVoice;
   if (requestedVoice === 'Aoede') return 'Zephyr';
-  return 'Puck';
+  return 'Kore';
 }
 
 import {
@@ -258,6 +258,114 @@ function cleanSpokenText(input: string): string {
   return cleaned;
 }
 
+/**
+ * Converts raw 24kHz 16-bit mono signed PCM (returned by Gemini TTS) into a compact,
+ * universally playable RIFF WAV (12kHz or 8kHz 16-bit mono) guaranteed to fit < 190KB base64
+ * for permanent Firestore /tts_cache storage and native HTML5 <audio> playback on macOS/AirPods & iOS.
+ */
+function convertPcm24kToCompactWavBase64(base64Pcm: string): string {
+  const pcmBuf = Buffer.from(base64Pcm, 'base64');
+  const totalInputSamples = Math.floor(pcmBuf.length / 2);
+
+  // Use 2:1 downsample (12kHz) for clips up to ~5.6s; 3:1 (8kHz) for longer clips so base64 < 190,000 chars
+  const ratio = totalInputSamples > 135000 ? 3 : 2;
+  const sampleRate = Math.floor(24000 / ratio);
+  const outSamples = Math.floor(totalInputSamples / ratio);
+  const dataByteLength = outSamples * 2;
+
+  const wavBuf = Buffer.alloc(44 + dataByteLength);
+  // RIFF header
+  wavBuf.write('RIFF', 0);
+  wavBuf.writeUInt32LE(36 + dataByteLength, 4);
+  wavBuf.write('WAVE', 8);
+  // fmt subchunk
+  wavBuf.write('fmt ', 12);
+  wavBuf.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+  wavBuf.writeUInt16LE(1, 20);  // AudioFormat (1 = PCM)
+  wavBuf.writeUInt16LE(1, 22);  // NumChannels (1 = mono)
+  wavBuf.writeUInt32LE(sampleRate, 24); // SampleRate
+  wavBuf.writeUInt32LE(sampleRate * 2, 28); // ByteRate
+  wavBuf.writeUInt16LE(2, 32);  // BlockAlign
+  wavBuf.writeUInt16LE(16, 34); // BitsPerSample
+  // data subchunk
+  wavBuf.write('data', 36);
+  wavBuf.writeUInt32LE(dataByteLength, 40);
+
+  // Low-pass box-filter averaging during downsampling to prevent aliasing
+  for (let i = 0; i < outSamples; i++) {
+    let sum = 0;
+    const baseIdx = i * ratio;
+    for (let j = 0; j < ratio; j++) {
+      sum += pcmBuf.readInt16LE((baseIdx + j) * 2);
+    }
+    const avg = Math.max(-32768, Math.min(32767, Math.round(sum / ratio)));
+    wavBuf.writeInt16LE(avg, 44 + i * 2);
+  }
+
+  return wavBuf.toString('base64');
+}
+
+async function generateGeminiTtsWav(
+  textToSpeak: string,
+  voiceName: string,
+  customKey?: string | null
+): Promise<{ audio: string; format: string } | null> {
+  const client = getGenAIClient(customKey);
+  if (!client) return null;
+
+  const expressivePrompt = `Say in a warm, clear, natural elementary school teacher voice with a brief pause between sentences: ${textToSpeak}`;
+
+  try {
+    let response;
+    try {
+      response = await client.models.generateContent({
+        model: 'gemini-2.5-flash-preview-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: expressivePrompt }],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
+            },
+          },
+        },
+      });
+    } catch {
+      response = await client.models.generateContent({
+        model: 'gemini-3.8-flash-lite-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: expressivePrompt }],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
+            },
+          },
+        },
+      });
+    }
+
+    const base64Pcm = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (base64Pcm) {
+      const compactWavBase64 = convertPcm24kToCompactWavBase64(base64Pcm);
+      return { audio: compactWavBase64, format: 'audio/wav' };
+    }
+  } catch {
+    // Fall through to backup speech if Gemini TTS fails or hits rate limit
+  }
+  return null;
+}
+
 async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   try {
     const chunks: Buffer[] = [];
@@ -285,15 +393,16 @@ async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   }
 }
 
-// 2. Text-to-Speech audio generation (Zero-Token Cached Natural Studio MP3 by default, Gemini TTS optional)
+// 2. Text-to-Speech audio generation (Gemini 2.5 Flash Native TTS -> Compact WAV cached forever in Firestore)
 app.post('/api/spelling/tts', async (req, res) => {
-  const { prompt, text, voice, useGeminiTts = false } = req.body;
+  const { prompt, text, voice } = req.body;
   const rawText = prompt || text;
   if (!rawText) {
     return res.status(400).json({ error: 'No text provided for TTS.' });
   }
   const textToSpeak = cleanSpokenText(rawText);
-  const cacheKey = `${useGeminiTts ? getValidVoice(voice) : 'studio'}:${textToSpeak.toLowerCase()}`;
+  const voiceName = getValidVoice(voice);
+  const cacheKey = `gemini_v2_${voiceName}:${textToSpeak.toLowerCase()}`;
 
   // 0. Check server in-memory TTS cache first
   const cached = serverTtsCache.get(cacheKey);
@@ -301,88 +410,28 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ audio: cached.audio, format: cached.format, cached: true });
   }
 
-  // 1. Default Zero-Token Path: Compact Natural Studio MP3 (~15-20 KB, fits easily in Firestore free tier)
-  if (!useGeminiTts) {
-    const naturalAudio = await fetchNaturalStudioSpeech(textToSpeak);
-    if (naturalAudio) {
-      const entry = { audio: naturalAudio, format: 'audio/mp3' };
-      setServerTtsCache(cacheKey, entry);
-      return res.json({ ...entry, cached: false });
-    }
-  }
-
-  // 2. Optional or Fallback Gemini Flash Native TTS
+  // 1. Primary Path: Generate once with Gemini 2.5 Flash Native TTS & encode as compact WAV for Firestore caching
   const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
-  const client = getGenAIClient(customKey);
-  if (client) {
-    try {
-      const voiceName = getValidVoice(voice);
-      let response;
-      try {
-        response = await client.models.generateContent({
-          model: 'gemini-3.8-flash-lite-tts',
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: textToSpeak }],
-            },
-          ],
-          config: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName },
-              },
-            },
-          },
-        });
-      } catch {
-        response = await client.models.generateContent({
-          model: 'gemini-2.5-flash-preview-tts',
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: textToSpeak }],
-            },
-          ],
-          config: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName },
-              },
-            },
-          },
-        });
-      }
-
-      const base64Audio =
-        response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (base64Audio) {
-        const entry = { audio: base64Audio, format: 'audio/pcm' };
-        setServerTtsCache(cacheKey, entry);
-        return res.json({ ...entry, cached: false });
-      }
-    } catch {
-      // Fallback to studio speech if Gemini TTS fails
-    }
+  const geminiWav = await generateGeminiTtsWav(textToSpeak, voiceName, customKey);
+  if (geminiWav) {
+    setServerTtsCache(cacheKey, geminiWav);
+    return res.json({ ...geminiWav, cached: false });
   }
 
-  // 3. Final fallback to Natural Studio Speech if Gemini TTS was requested and failed
+  // 2. Fallback to Studio MP3 Speech only if Gemini TTS quota is temporarily exhausted
   const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
   if (naturalFallback) {
-    const entry = { audio: naturalFallback, format: 'audio/mp3' };
-    setServerTtsCache(cacheKey, entry);
-    return res.json({ ...entry, cached: false });
+    return res.json({ audio: naturalFallback, format: 'audio/mp3', cached: false, isFallback: true });
   }
 
   return res.json({ audio: null, error: 'Could not generate speech audio.' });
 });
 
-// 2b. Batch Pre-Create TTS Audio for a list of words (0 Gemini tokens, compact MP3s for Firestore caching)
+// 2b. Batch Pre-Create TTS Audio for a list of words using Gemini Native TTS (compact WAVs for Firestore caching)
 app.post('/api/spelling/tts-batch', async (req, res) => {
+  const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
   const items: Array<{ word: string; exampleSentence: string }> = Array.isArray(req.body?.items)
-    ? req.body.items.slice(0, 25)
+    ? req.body.items.slice(0, 5)
     : [];
 
   const generated: Record<string, { audio: string; format: string }> = {};
@@ -390,13 +439,12 @@ app.post('/api/spelling/tts-batch', async (req, res) => {
     if (!item?.word) continue;
     const cleanWord = item.word.toLowerCase().trim();
     const textToSpeak = `${cleanWord}. ${item.exampleSentence || ''}. Spell ${cleanWord}.`;
-    const cacheKey = `studio:${textToSpeak.toLowerCase()}`;
+    const cacheKey = `gemini_v2_Kore:${textToSpeak.toLowerCase()}`;
 
     let entry = serverTtsCache.get(cacheKey);
     if (!entry) {
-      const audio = await fetchNaturalStudioSpeech(textToSpeak);
-      if (audio) {
-        entry = { audio, format: 'audio/mp3' };
+      entry = (await generateGeminiTtsWav(textToSpeak, 'Kore', customKey)) || undefined;
+      if (entry) {
         setServerTtsCache(cacheKey, entry);
       }
     }

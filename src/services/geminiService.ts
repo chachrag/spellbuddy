@@ -259,12 +259,12 @@ export function onTTSError(listener: TTSErrorListener): () => void {
 }
 
 /**
- * Fetches and caches base64 MP3 audio for a specific cacheKey.
- * Uses a 4-layer zero-token cache hierarchy:
+ * Fetches and caches base64 WAV/MP3 audio for a specific cacheKey.
+ * Uses a 4-layer cache hierarchy:
  * 1. In-memory base64 cache (0ms)
  * 2. Browser IndexedDB persistent cache (0 network / 0 Firestore reads)
- * 3. Firestore /tts_cache/{wordKey} shared pre-created audio
- * 4. Server /api/spelling/tts (0-token Studio MP3 speech), then persists to IndexedDB + Firestore
+ * 3. Firestore /tts_cache/{wordKey} shared pre-created Gemini TTS audio
+ * 4. Server /api/spelling/tts (Gemini 2.5 Flash Native TTS -> compact WAV), then persists forever to IndexedDB + Firestore
  */
 async function getOrFetchTTSBase64(
   promptDirection: string,
@@ -301,24 +301,26 @@ async function getOrFetchTTSBase64(
       return firestoreBase64;
     }
 
-    // 3. Fetch from server TTS endpoint (uses 0-token studio MP3 by default)
+    // 3. Fetch from server TTS endpoint (generates once with Gemini 2.5 Flash TTS 'Kore' & encodes to compact WAV)
     let base64Audio: string | null = null;
-    let audioFormat = 'audio/mp3';
+    let audioFormat = 'audio/wav';
+    let isFallback = false;
     let ttsError: string | null = null;
 
-    const geminiVoice = voiceName === 'PuckAdult' ? 'Puck' : voiceName;
+    const geminiVoice = voiceName === 'PuckAdult' ? 'Kore' : voiceName || 'Kore';
     try {
       const res = await fetch('/api/spelling/tts', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ prompt: promptDirection, voice: geminiVoice, useGeminiTts: false }),
+        body: JSON.stringify({ prompt: promptDirection, voice: geminiVoice, useGeminiTts: true }),
       });
 
       if (res.ok) {
         const data = await res.json();
         if (data.audio) {
           base64Audio = data.audio;
-          audioFormat = data.format || 'audio/mp3';
+          audioFormat = data.format || 'audio/wav';
+          isFallback = Boolean(data.isFallback);
         } else if (data.error) {
           ttsError = data.error;
         }
@@ -333,12 +335,14 @@ async function getOrFetchTTSBase64(
       throw new Error(ttsError || 'Audio stream unavailable.');
     }
 
-    // Save to client IndexedDB and Firestore /tts_cache for all future sessions
-    setIdbAudio(normalizedWordKey, base64Audio).catch(() => {});
-    const targetWord = cacheKey.replace(/^word[-_]/i, '').toLowerCase();
-    saveCachedTtsToFirestore(normalizedWordKey, targetWord, 'studio', base64Audio, audioFormat).catch(() => {});
+    // Only persist genuine Gemini Native TTS audio permanently to IndexedDB and Firestore /tts_cache
+    if (!isFallback) {
+      setIdbAudio(normalizedWordKey, base64Audio).catch(() => {});
+      const targetWord = cacheKey.replace(/^word(?:_v2)?[-_]/i, '').toLowerCase();
+      saveCachedTtsToFirestore(normalizedWordKey, targetWord, geminiVoice, base64Audio, audioFormat).catch(() => {});
+      audioBase64Cache.set(normalizedWordKey, base64Audio);
+    }
 
-    audioBase64Cache.set(normalizedWordKey, base64Audio);
     inflightBase64Requests.delete(normalizedWordKey);
     return base64Audio;
   })();
@@ -356,14 +360,14 @@ async function getOrFetchTTSBase64(
 let geminiTtsQuotaHit = false;
 
 /**
- * Speaks text using cached MP3 audio via standard HTML5 Audio (with Web Audio fallback).
+ * Speaks text using cached Gemini Native TTS WAV audio via standard HTML5 Audio (with Web Audio fallback).
  * HTML5 Audio seamlessly follows macOS CoreAudio and Bluetooth (AirPods) output device routing.
  */
 export async function speakWithGeminiTTS(
   promptDirection: string,
   _fallbackPlainText: string,
   cacheKey: string,
-  voiceName: StudioVoice = 'Puck',
+  voiceName: StudioVoice = 'Kore',
   onEnded?: () => void
 ): Promise<void> {
   unlockAudioOnIOS();
@@ -376,10 +380,11 @@ export async function speakWithGeminiTTS(
 
   try {
     const base64Audio = await getOrFetchTTSBase64(promptDirection, cacheKey, voiceName);
+    const mimeType = base64Audio.startsWith('UklGR') ? 'audio/wav' : 'audio/mp3';
 
     // Primary path: standard HTML5 Audio element (handles macOS + AirPods Bluetooth routing natively)
     try {
-      const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
+      const audio = new Audio(`data:${mimeType};base64,${base64Audio}`);
       audio.preload = 'auto';
       activeHtmlAudio = audio;
 
@@ -443,7 +448,7 @@ export async function speakWithGeminiTTS(
  */
 export function playWithBrowserSpeech(
   text: string,
-  voiceName: StudioVoice = 'Puck',
+  voiceName: StudioVoice = 'Kore',
   onEnded?: () => void
 ): void {
   if (typeof window === 'undefined') {
@@ -527,17 +532,17 @@ export function playWithBrowserSpeech(
 }
 
 /**
- * Silently pre-creates and caches MP3 TTS audio for a list of words (0 Gemini tokens)
- * into client IndexedDB and Firestore /tts_cache so "Play Word" is instantaneous.
+ * Silently loads any existing cached Gemini TTS WAVs from IndexedDB and Firestore /tts_cache
+ * (0 tokens) and pre-generates up to 2 uncached words at a time so we respect Gemini TTS RPM limits.
  */
-export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice): Promise<number> {
+export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice, maxBatchGenerate = 2): Promise<number> {
   if (typeof window === 'undefined' || !Array.isArray(words) || words.length === 0) return 0;
 
   const missingItems: Array<{ word: string; exampleSentence: string; key: string }> = [];
 
   for (const w of words) {
     const cleanWord = w.word.toLowerCase().trim().replace(/[^a-z0-9_-]/g, '_');
-    const key = `word_${cleanWord}`;
+    const key = `word_v2_${cleanWord}`;
     if (audioBase64Cache.has(key)) continue;
 
     const idbHit = await getIdbAudio(key);
@@ -563,12 +568,15 @@ export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice)
   if (missingItems.length === 0) return words.length;
 
   let cachedCount = words.length - missingItems.length;
+  const itemsToGenerate = missingItems.slice(0, maxBatchGenerate);
+  if (itemsToGenerate.length === 0) return cachedCount;
+
   try {
     const res = await fetch('/api/spelling/tts-batch', {
       method: 'POST',
       headers: getRequestHeaders(),
       body: JSON.stringify({
-        items: missingItems.map((m) => ({
+        items: itemsToGenerate.map((m) => ({
           word: m.word,
           exampleSentence: m.exampleSentence,
         })),
@@ -578,13 +586,13 @@ export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice)
     if (res.ok) {
       const data = await res.json();
       const generated: Record<string, { audio: string; format: string }> = data.generated || {};
-      for (const m of missingItems) {
+      for (const m of itemsToGenerate) {
         const item = generated[m.word];
         if (item?.audio) {
           cachedCount += 1;
           audioBase64Cache.set(m.key, item.audio);
           await setIdbAudio(m.key, item.audio);
-          saveCachedTtsToFirestore(m.key, m.word, 'studio', item.audio, item.format || 'audio/mp3').catch(() => {});
+          saveCachedTtsToFirestore(m.key, m.word, 'Kore', item.audio, item.format || 'audio/wav').catch(() => {});
         }
       }
     }

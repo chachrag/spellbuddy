@@ -948,7 +948,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
                     <span className="font-bold text-emerald-950">
-                      Zero-Token Word Bank &amp; Pre-Created TTS Cache Active
+                      Zero-Token Word Bank &amp; Gemini TTS Cache Active
                     </span>
                   </div>
                   <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
@@ -956,7 +956,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </span>
                 </div>
                 <p className="mt-1.5 text-slate-600 leading-relaxed">
-                  Rounds are served instantly from the built-in <strong>600-word phonics database</strong> (Levels 1–5) using <strong>0 AI tokens</strong>. Word audio is pre-created as compact MP3s (~18 KB/word) and cached across browser IndexedDB and Firebase Firestore (<code className="text-[10px]">/tts_cache</code>), using under 1.5% of the Firebase Free Tier 1 GiB storage.
+                  Rounds are served instantly from the built-in <strong>600-word phonics database</strong> (Levels 1–5) using <strong>0 AI tokens</strong>. Word audio is generated once with <strong>Gemini 2.5 Flash Native TTS (`Kore` voice)</strong>, compressed to a compact WAV (~75 KB/word), and cached forever in browser IndexedDB and Firebase Firestore (<code className="text-[10px]">/tts_cache</code>), using under 4.5% of the Firebase Free Tier 1 GiB storage.
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
@@ -966,23 +966,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       const levelWords = EXPANSIVE_WORDS_BY_LEVEL[level] || [];
                       setTestResult({
                         success: true,
-                        message: `Pre-caching Level ${level} (${levelWords.length} words) into Firestore & IndexedDB in batches...`,
+                        message: `Pre-caching next 5 uncached Level ${level} words with Gemini Native TTS ('Kore' voice) into Firestore & IndexedDB...`,
                       });
                       if (isAdmin) {
                         await seedWordBankLevelToFirestore(level, levelWords).catch(() => {});
                       }
-                      for (let i = 0; i < levelWords.length; i += 20) {
-                        await prewarmRoundAudio(levelWords.slice(i, i + 20), 'Kore');
-                      }
+                      const cachedTotal = await prewarmRoundAudio(levelWords, 'Kore', 5);
                       setTestResult({
                         success: true,
-                        message: `Level ${level} (${levelWords.length} words) audio pre-created and cached in IndexedDB & Firestore!`,
+                        message: `Level ${level} Gemini TTS cache updated: ${cachedTotal} / ${levelWords.length} words now cached in IndexedDB & Firestore!`,
                       });
                     }}
                     className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 transition"
                   >
                     <Download className="h-3.5 w-3.5" />
-                    Pre-Cache All Level {profile.difficultyLevel} Audio ({(EXPANSIVE_WORDS_BY_LEVEL[profile.difficultyLevel] || []).length} Words)
+                    Pre-Cache Next Batch of Level {profile.difficultyLevel} Gemini Audio
                   </button>
                 </div>
               </div>

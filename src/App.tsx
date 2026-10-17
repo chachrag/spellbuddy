@@ -36,6 +36,7 @@ import {
   generateSpellingRoundWithMeta,
   gradeHandwrittenSheet,
   speakWithGeminiTTS,
+  prewarmRoundAudio,
   stopCurrentAudio,
   StudioVoice,
   getCustomApiKey,
@@ -65,13 +66,6 @@ import {
   MASTER_ADMIN_EMAIL,
 } from './services/firebase';
 
-const VOICE_OPTIONS: { id: StudioVoice; label: string }[] = [
-  { id: 'Puck', label: 'Puck (Kid Buddy Voice)' },
-  { id: 'Kore', label: 'Kore (Warm Teacher)' },
-  { id: 'Aoede', label: 'Aoede (Storyteller)' },
-  { id: 'PuckAdult', label: 'Puck (Adult Voice)' },
-];
-
 export default function App() {
   // Authentication & Authorization state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -92,10 +86,7 @@ export default function App() {
   const [profileModalMode, setProfileModalMode] = useState<'switch' | 'create' | 'edit'>('switch');
   const [levelFeedbackNote, setLevelFeedbackNote] = useState<string | null>(null);
 
-  const [selectedVoice, setSelectedVoice] = useState<StudioVoice>(() => {
-    const saved = localStorage.getItem('spellbuddy_selected_voice') as StudioVoice | null;
-    return saved && ['Puck', 'Kore', 'Aoede', 'PuckAdult'].includes(saved) ? saved : 'Puck';
-  });
+  const selectedVoice: StudioVoice = 'Kore';
 
   const [stage, setStage] = useState<'welcome' | 'round' | 'capture' | 'results'>('welcome');
   const [showSettings, setShowSettings] = useState(false);
@@ -256,10 +247,16 @@ export default function App() {
     }
   };
 
-  const playWordAudio = async (wordItem: WordItem, _index: number, voice = selectedVoice) => {
+  const playWordAudio = async (wordItem: WordItem, index: number, voice = selectedVoice) => {
     const promptDirection = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
     const fallbackText = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
-    const cacheKey = `word_${wordItem.word.toLowerCase().trim()}`;
+    const cacheKey = `word_v2_${wordItem.word.toLowerCase().trim()}`;
+
+    // Gently pre-warm the next word in the round in the background while the current word plays
+    const nextWord = words[index + 1];
+    if (nextWord) {
+      prewarmRoundAudio([nextWord], voice, 1).catch(() => {});
+    }
 
     setSpeakingMode('word');
     await speakWithGeminiTTS(
@@ -779,27 +776,6 @@ export default function App() {
               </div>
               <Users className="h-3 w-3 text-sky-500 hidden sm:inline" />
             </button>
-
-            {/* AI Teacher Voice Selector */}
-            <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5">
-              <Mic className="h-3.5 w-3.5 text-sky-600" />
-              <select
-                value={selectedVoice}
-                onChange={(e) => {
-                  const nextVoice = e.target.value as StudioVoice;
-                  setSelectedVoice(nextVoice);
-                  localStorage.setItem('spellbuddy_selected_voice', nextVoice);
-                }}
-                aria-label="Select AI Voice"
-                className="bg-transparent text-[11px] font-bold text-slate-700 focus:outline-none cursor-pointer max-w-[80px] sm:max-w-none"
-              >
-                {VOICE_OPTIONS.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.label.split(' ')[0]} {v.id === 'Puck' ? '(Kid)' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
 
             {/* Settings & Tools Button */}
             <button
