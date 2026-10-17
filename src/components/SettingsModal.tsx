@@ -1077,7 +1077,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </span>
                 </div>
                 <p className="mt-1.5 text-slate-600 leading-relaxed">
-                  Rounds are served instantly from the built-in <strong>600-word phonics database</strong> (Levels 1–5) using <strong>0 AI tokens</strong>. Word audio is synthesized with <strong>Microsoft Edge Neural TTS (`en-US-AvaNeural`)</strong> as compact MP3s (~20 KB/word) and cached forever in browser IndexedDB and Firebase Firestore (<code className="text-[10px]">/tts_cache</code>), using only ~12 MB (&lt; 1.2% of Firebase Free Tier 1 GiB storage).
+                  Rounds are served instantly from the built-in <strong>600-word phonics database</strong> (Levels 1–5) using <strong>0 AI tokens</strong>. All 600 words are pre-rendered with <strong>Microsoft Edge Neural TTS (`en-US-AvaNeural`)</strong> studio MP3s and cached in browser IndexedDB using <strong>0 Firestore write units</strong> to prevent quota limits.
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
@@ -1093,15 +1093,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           ...(EXPANSIVE_WORDS_BY_LEVEL[4] || []),
                           ...(EXPANSIVE_WORDS_BY_LEVEL[5] || []),
                         ];
-                        if (isAdmin) {
-                          for (let lvl = 1; lvl <= 5; lvl++) {
-                            await seedWordBankLevelToFirestore(lvl, EXPANSIVE_WORDS_BY_LEVEL[lvl] || []).catch(() => {});
-                          }
-                        }
                         let done = 0;
                         setTestResult({
                           success: true,
-                          message: `Starting pre-cache: 0 / ${allWords.length} cached in Firestore & IndexedDB...`,
+                          message: `Starting pre-cache: 0 / ${allWords.length} cached in IndexedDB...`,
                         });
                         for (let i = 0; i < allWords.length; i += 20) {
                           const batch = allWords.slice(i, i + 20);
@@ -1109,12 +1104,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           done += count;
                           setTestResult({
                             success: true,
-                            message: `Pre-creating TTS audio: ${done} / ${allWords.length} cached in Firestore & IndexedDB...`,
+                            message: `Pre-caching neural audio: ${done} / ${allWords.length} cached in IndexedDB...`,
                           });
                         }
                         setTestResult({
                           success: true,
-                          message: `Done! ${done} / ${allWords.length} words pre-created and cached in IndexedDB & Firestore!`,
+                          message: `Done! ${done} / ${allWords.length} words pre-cached in IndexedDB! Zero tokens, zero Firestore writes consumed.`,
                         });
                       } catch (err) {
                         setTestResult({
@@ -1136,7 +1131,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     ) : (
                       <Download className="h-3.5 w-3.5" />
                     )}
-                    {cachingAudio ? 'Pre-Caching Words Audio...' : 'Pre-Cache All 600 Words Audio into Firestore'}
+                    {cachingAudio ? 'Pre-Caching Words Audio...' : 'Pre-Cache All 600 Words into Local Storage'}
                   </button>
 
                   <button

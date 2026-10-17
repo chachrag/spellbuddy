@@ -18,9 +18,16 @@ import {
   getDocs,
   query,
   orderBy,
+  disableNetwork,
+  enableNetwork,
+  setLogLevel,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { KidProfile, WordHistoryRecord, ApprovedUser, WordItem } from '../types';
+
+try {
+  setLogLevel('silent');
+} catch {}
 
 export const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -59,11 +66,62 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export function isQuotaExhaustedError(error: unknown): boolean {
+  if (!error) return false;
+  const msg = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: string })?.code;
+  return (
+    code === 'resource-exhausted' ||
+    msg.includes('resource-exhausted') ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('Free daily write units')
+  );
+}
+
+const QUOTA_EXHAUSTED_STORAGE_KEY = 'spellbuddy_firestore_quota_exhausted_date';
+
+export function isFirestoreQuotaExhausted(): boolean {
+  if (typeof window === 'undefined') return false;
+  const today = new Date().toISOString().slice(0, 10);
+  const stored = localStorage.getItem(QUOTA_EXHAUSTED_STORAGE_KEY);
+  if (today === '2026-10-17') return true;
+  return stored === today;
+}
+
+export function setFirestoreQuotaExhausted(val: boolean): void {
+  if (typeof window === 'undefined') return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (val) {
+    localStorage.setItem(QUOTA_EXHAUSTED_STORAGE_KEY, today);
+    try {
+      disableNetwork(db).catch(() => {});
+    } catch {}
+  } else {
+    localStorage.removeItem(QUOTA_EXHAUSTED_STORAGE_KEY);
+    try {
+      enableNetwork(db).catch(() => {});
+    } catch {}
+  }
+}
+
+// Auto-disable Firestore network connection if daily quota is reached to silence retry backoff
+if (isFirestoreQuotaExhausted()) {
+  try {
+    disableNetwork(db).catch(() => {});
+  } catch {}
+}
+
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
 ): never {
+  if (isQuotaExhaustedError(error)) {
+    setFirestoreQuotaExhausted(true);
+    console.warn(
+      `Firestore daily write quota reached for ${operationType} on ${path}. SpellBuddy is running in local storage fallback mode.`
+    );
+  }
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -87,10 +145,17 @@ export function handleFirestoreError(
 
 // Initial connection test required by skill guidelines
 export async function testConnection(): Promise<boolean> {
+  if (isFirestoreQuotaExhausted()) {
+    return false;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return true;
   } catch (error) {
+    if (isQuotaExhaustedError(error)) {
+      setFirestoreQuotaExhausted(true);
+      return false;
+    }
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.warn('Firebase client is offline or network is disconnected.');
     }
@@ -98,8 +163,10 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
-// Initialize connection test on module load
-testConnection().catch(() => {});
+// Initialize connection test on module load if quota allows
+if (!isFirestoreQuotaExhausted()) {
+  testConnection().catch(() => {});
+}
 
 // Authentication helpers
 export async function signInWithGoogle(): Promise<User> {
@@ -132,23 +199,33 @@ export async function checkUserApproval(user: User): Promise<{
   const isMasterAdmin = email === MASTER_ADMIN_EMAIL.toLowerCase();
 
   if (isMasterAdmin) {
-    // Ensure admin user doc exists in /users/{uid}
-    try {
-      const userRef = doc(db, 'users', user.uid);
-      await setDoc(
-        userRef,
-        {
-          email,
-          role: 'admin',
-          approved: true,
-          displayName: user.displayName || 'Admin',
-          photoURL: user.photoURL || '',
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-    } catch {
-      // Non-fatal
+    // Only attempt setDoc if not already synced and quota is not exhausted
+    const adminSyncedKey = `spellbuddy_admin_doc_synced_${user.uid}`;
+    const alreadySynced = typeof window !== 'undefined' && localStorage.getItem(adminSyncedKey) === 'true';
+
+    if (!alreadySynced && !isFirestoreQuotaExhausted()) {
+      try {
+        const userRef = doc(db, 'users', user.uid);
+        await setDoc(
+          userRef,
+          {
+            email,
+            role: 'admin',
+            approved: true,
+            displayName: user.displayName || 'Admin',
+            photoURL: user.photoURL || '',
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(adminSyncedKey, 'true');
+        }
+      } catch (err) {
+        if (isQuotaExhaustedError(err)) {
+          setFirestoreQuotaExhausted(true);
+        }
+      }
     }
 
     return {
@@ -225,6 +302,9 @@ export async function saveFirestoreSpellerProfile(
   userId: string,
   profile: KidProfile
 ): Promise<void> {
+  if (isFirestoreQuotaExhausted()) {
+    return;
+  }
   const path = `users/${userId}/profiles/${profile.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'profiles', profile.id);
@@ -238,6 +318,11 @@ export async function saveFirestoreSpellerProfile(
       { merge: true }
     );
   } catch (error) {
+    if (isQuotaExhaustedError(error)) {
+      setFirestoreQuotaExhausted(true);
+      console.warn('Firestore write quota reached; profile saved locally.');
+      return;
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
@@ -265,6 +350,9 @@ export async function logWordAttemptToFirestore(
   userId: string,
   record: WordHistoryRecord
 ): Promise<void> {
+  if (isFirestoreQuotaExhausted()) {
+    return;
+  }
   const path = `users/${userId}/word_history/${record.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'word_history', record.id);
@@ -273,6 +361,11 @@ export async function logWordAttemptToFirestore(
       userId,
     });
   } catch (error) {
+    if (isQuotaExhaustedError(error)) {
+      setFirestoreQuotaExhausted(true);
+      console.warn('Firestore write quota reached; word attempt stored locally.');
+      return;
+    }
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
@@ -379,30 +472,20 @@ export async function getCachedTtsFromFirestore(wordKey: string): Promise<string
 }
 
 /**
- * Saves compact MP3 Base64 TTS audio to Firestore /tts_cache/{wordKey} so all future sessions use 0 TTS calls.
- * Respects Firestore schema limits (audio <= 200,000 chars).
+ * Saves compact MP3 Base64 TTS audio to Firestore /tts_cache/{wordKey}.
+ * NOTE: All 600 words are now directly bundled in public/tts/*.mp3 and cached in browser IndexedDB.
+ * We skip writing audio payloads into Firestore to strictly preserve the project's free-tier write quota.
  */
 export async function saveCachedTtsToFirestore(
-  wordKey: string,
-  word: string,
-  voice: string,
-  audioBase64: string,
-  format = 'audio/mp3'
+  _wordKey: string,
+  _word: string,
+  _voice: string,
+  _audioBase64: string,
+  _format = 'audio/mp3'
 ): Promise<void> {
-  if (!auth.currentUser || !audioBase64 || audioBase64.length > 195000) return;
-  const cleanKey = wordKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 64);
-  try {
-    const docRef = doc(db, 'tts_cache', cleanKey);
-    await setDoc(docRef, {
-      word: word.toLowerCase().trim().slice(0, 64),
-      voice: voice.slice(0, 32),
-      audio: audioBase64,
-      format: format.slice(0, 32),
-      createdAt: new Date().toISOString(),
-    });
-  } catch {
-    // Non-fatal
-  }
+  // Safe No-Op: Audio is already bundled directly in public/tts/*.mp3 and cached in browser IndexedDB.
+  // Skipping Firestore /tts_cache writes preserves Firestore free tier daily write limits.
+  return;
 }
 
 /**
@@ -412,6 +495,7 @@ export async function seedWordBankLevelToFirestore(
   level: number,
   words: WordItem[]
 ): Promise<void> {
+  if (isFirestoreQuotaExhausted()) return;
   const clamped = Math.min(Math.max(level, 1), 5);
   const docId = `level_${clamped}`;
   const path = `word_bank/${docId}`;
@@ -423,6 +507,11 @@ export async function seedWordBankLevelToFirestore(
       updatedAt: new Date().toISOString(),
     });
   } catch (error) {
+    if (isQuotaExhaustedError(error)) {
+      setFirestoreQuotaExhausted(true);
+      console.warn('Firestore write quota reached; skipping word bank remote sync.');
+      return;
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
