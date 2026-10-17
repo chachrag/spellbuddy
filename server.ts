@@ -730,6 +730,11 @@ app.post('/api/spelling/grade', async (req, res) => {
       return res.status(400).json({ error: 'Missing imageBase64 in request.' });
     }
 
+    const dataUrlMatch =
+      typeof imageBase64 === 'string' ? imageBase64.match(/^data:([^;]+);base64,(.+)$/s) : null;
+    const resolvedMimeType = dataUrlMatch ? dataUrlMatch[1] : mimeType;
+    const cleanBase64 = (dataUrlMatch ? dataUrlMatch[2] : String(imageBase64)).replace(/\s/g, '');
+
     const wordListDescription = words
       .map(
         (w: { word: string }, idx: number) =>
@@ -772,8 +777,8 @@ CRITICAL RULES FOR PRECISE, ACCURATE GRADING:
 
     const imagePart = {
       inlineData: {
-        mimeType,
-        data: imageBase64,
+        mimeType: resolvedMimeType,
+        data: cleanBase64,
       },
     };
 

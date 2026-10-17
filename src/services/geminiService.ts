@@ -780,12 +780,16 @@ export async function gradeHandwrittenSheet(
   words: WordItem[]
 ): Promise<RoundGradingResponse> {
   const customApiKey = getCustomApiKey();
+  const dataUrlMatch = base64Image.match(/^data:([^;]+);base64,(.+)$/s);
+  const resolvedMimeType = dataUrlMatch ? dataUrlMatch[1] : mimeType;
+  const cleanBase64 = (dataUrlMatch ? dataUrlMatch[2] : base64Image).replace(/\s/g, '');
+
   const res = await fetch('/api/spelling/grade', {
     method: 'POST',
     headers: getRequestHeaders(),
     body: JSON.stringify({
-      imageBase64: base64Image,
-      mimeType,
+      imageBase64: cleanBase64,
+      mimeType: resolvedMimeType,
       words,
       customApiKey,
     }),
