@@ -61,6 +61,41 @@ async function setIdbAudio(key: string, base64Audio: string): Promise<void> {
   });
 }
 
+export async function clearIdbAudio(): Promise<void> {
+  audioBase64Cache.clear();
+  audioBufferCache.clear();
+  const db = await openTtsIdb();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      const store = tx.objectStore(IDB_STORE);
+      store.clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+export type VoiceEngineMode = 'device_natural' | 'gemini_studio' | 'server_cached';
+const VOICE_ENGINE_KEY = 'spellbuddy_voice_engine_mode';
+
+export function getVoiceEnginePreference(): VoiceEngineMode {
+  if (typeof window === 'undefined') return 'device_natural';
+  const saved = localStorage.getItem(VOICE_ENGINE_KEY);
+  if (saved === 'server_cached' || saved === 'gemini_studio' || saved === 'device_natural') {
+    return saved;
+  }
+  return 'device_natural';
+}
+
+export function setVoiceEnginePreference(mode: VoiceEngineMode): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(VOICE_ENGINE_KEY, mode);
+}
+
 export function getCustomApiKey(): string {
   if (typeof window === 'undefined') return '';
   return localStorage.getItem(CUSTOM_KEY_STORAGE) || '';
@@ -372,6 +407,20 @@ export async function speakWithGeminiTTS(
 ): Promise<void> {
   unlockAudioOnIOS();
   stopCurrentAudio();
+
+  const mode = getVoiceEnginePreference();
+
+  // 1. Device Natural Voice (Uses Apple Ava/Samantha/Siri or Google/Windows neural voice - human & expressive)
+  if (mode === 'device_natural') {
+    playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
+    return;
+  }
+
+  // 2. Gemini Studio Voice: Requires custom API key
+  if (mode === 'gemini_studio' && !getCustomApiKey()) {
+    playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
+    return;
+  }
 
   if (geminiTtsQuotaHit && !getCustomApiKey()) {
     playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);

@@ -411,7 +411,7 @@ async function fetchEdgeNeuralSpeech(
         ws.close();
       } catch {}
       finish(null);
-    }, 8000);
+    }, 2000);
 
     const connectionId = crypto.randomBytes(16).toString('hex');
     const requestId = crypto.randomBytes(16).toString('hex');
@@ -559,7 +559,15 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ audio: cached.audio, format: cached.format, cached: true });
   }
 
-  // 1. Primary Path: Microsoft Edge Neural TTS ('en-US-AvaNeural') — 0 Gemini tokens, ~20KB MP3, unlimited quota
+  // 1. Primary Path: High-speed Natural Studio Speech (MP3) — 0 Gemini tokens, instant response (~100ms)
+  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
+  if (naturalFallback) {
+    const entry = { audio: naturalFallback, format: 'audio/mp3' };
+    setServerTtsCache(cacheKey, entry);
+    return res.json({ ...entry, cached: false });
+  }
+
+  // 2. Secondary Path: Edge Neural Speech
   const edgeNeuralMp3 = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
   if (edgeNeuralMp3) {
     const entry = { audio: edgeNeuralMp3, format: 'audio/mp3' };
@@ -567,7 +575,7 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ ...entry, cached: false });
   }
 
-  // 2. Secondary Path: Gemini 2.5 Flash Native TTS ('Kore') encoded as compact WAV
+  // 3. Tertiary Path: Gemini 2.5 Flash Native TTS ('Kore') encoded as compact WAV
   const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
   const voiceName = getValidVoice(voice);
   const geminiWav = await generateGeminiTtsWav(textToSpeak, voiceName, customKey);
@@ -576,16 +584,10 @@ app.post('/api/spelling/tts', async (req, res) => {
     return res.json({ ...geminiWav, cached: false });
   }
 
-  // 3. Final Fallback
-  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
-  if (naturalFallback) {
-    return res.json({ audio: naturalFallback, format: 'audio/mp3', cached: false, isFallback: true });
-  }
-
   return res.json({ audio: null, error: 'Could not generate speech audio.' });
 });
 
-// 2b. Batch Pre-Create TTS Audio for up to 25 words at a time using Edge Neural TTS ('en-US-AvaNeural', 0 Gemini tokens)
+// 2b. Batch Pre-Create TTS Audio for up to 25 words at a time (0 Gemini tokens)
 app.post('/api/spelling/tts-batch', async (req, res) => {
   const items: Array<{ word: string; exampleSentence: string }> = Array.isArray(req.body?.items)
     ? req.body.items.slice(0, 25)
@@ -593,9 +595,9 @@ app.post('/api/spelling/tts-batch', async (req, res) => {
 
   const generated: Record<string, { audio: string; format: string }> = {};
 
-  // Process in parallel chunks of 5 for fast, reliable WebSocket synthesis
-  for (let i = 0; i < items.length; i += 5) {
-    const chunk = items.slice(i, i + 5);
+  // Process in parallel chunks of 10 for fast, reliable batch pre-caching
+  for (let i = 0; i < items.length; i += 10) {
+    const chunk = items.slice(i, i + 10);
     await Promise.all(
       chunk.map(async (item) => {
         if (!item?.word) return;
@@ -605,10 +607,18 @@ app.post('/api/spelling/tts-batch', async (req, res) => {
 
         let entry = serverTtsCache.get(cacheKey);
         if (!entry) {
-          const mp3Audio = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
-          if (mp3Audio) {
-            entry = { audio: mp3Audio, format: 'audio/mp3' };
+          // 1. Natural studio speech (fast ~100ms MP3)
+          const naturalAudio = await fetchNaturalStudioSpeech(textToSpeak);
+          if (naturalAudio) {
+            entry = { audio: naturalAudio, format: 'audio/mp3' };
             setServerTtsCache(cacheKey, entry);
+          } else {
+            // 2. Edge neural speech fallback
+            const mp3Audio = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
+            if (mp3Audio) {
+              entry = { audio: mp3Audio, format: 'audio/mp3' };
+              setServerTtsCache(cacheKey, entry);
+            }
           }
         }
         if (entry) {

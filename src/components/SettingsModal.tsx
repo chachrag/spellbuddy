@@ -25,7 +25,15 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { getCustomApiKey, setCustomApiKey, prewarmRoundAudio } from '../services/geminiService';
+import {
+  getCustomApiKey,
+  setCustomApiKey,
+  prewarmRoundAudio,
+  getVoiceEnginePreference,
+  setVoiceEnginePreference,
+  VoiceEngineMode,
+  clearIdbAudio,
+} from '../services/geminiService';
 import { KidProfile, WordHistoryRecord, ApprovedUser, PhonemeStat } from '../types';
 import { LEVEL_DESCRIPTIONS } from '../profileManager';
 import { EXPANSIVE_WORDS_BY_LEVEL } from '../wordBank';
@@ -89,11 +97,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Phoneme Dashboard reset confirm
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [cachingAudio, setCachingAudio] = useState(false);
+  const [voiceEngine, setVoiceEngine] = useState<VoiceEngineMode>(getVoiceEnginePreference());
 
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
       setApiKey(getCustomApiKey());
+      setVoiceEngine(getVoiceEnginePreference());
       setTestResult(null);
       setSaveSuccess(false);
 
@@ -942,6 +953,116 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
+              {/* Voice Engine & Natural Speech Settings */}
+              <div className="mt-6 rounded-2xl border-2 border-indigo-100 bg-indigo-50/50 p-4 text-xs text-slate-700">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-indigo-600 shrink-0" />
+                    <span className="font-bold text-indigo-950">Spelling Spoken Voice Engine</span>
+                  </div>
+                  <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-[10px] font-bold text-indigo-800">
+                    {voiceEngine === 'device_natural' ? 'Natural Neural Voice' : voiceEngine === 'gemini_studio' ? 'Gemini AI Voice' : 'Cached Audio'}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-slate-600 leading-relaxed">
+                  Choose how words and example sentences are spoken during spelling rounds:
+                </p>
+
+                <div className="mt-3 space-y-2">
+                  <label
+                    onClick={() => {
+                      setVoiceEngine('device_natural');
+                      setVoiceEnginePreference('device_natural');
+                    }}
+                    className={`flex items-start gap-2.5 rounded-xl border p-2.5 cursor-pointer transition ${
+                      voiceEngine === 'device_natural'
+                        ? 'border-indigo-500 bg-white shadow-sm ring-1 ring-indigo-500/20'
+                        : 'border-slate-200/80 bg-white/60 hover:bg-white'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="voiceEngine"
+                      checked={voiceEngine === 'device_natural'}
+                      onChange={() => {
+                        setVoiceEngine('device_natural');
+                        setVoiceEnginePreference('device_natural');
+                      }}
+                      className="mt-0.5 h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <span>🌟 Device Natural Neural Voice (Recommended)</span>
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800">
+                          Non-Robotic &amp; Expressive
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
+                        Uses your device's built-in neural voices (<strong>Ava</strong>, <strong>Samantha</strong>, <strong>Siri</strong> on iOS/Mac; <strong>Jenny</strong> on Windows; <strong>Google US</strong> on Android). Sounds natural, human, warm, and zero latency.
+                      </p>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => {
+                      setVoiceEngine('gemini_studio');
+                      setVoiceEnginePreference('gemini_studio');
+                    }}
+                    className={`flex items-start gap-2.5 rounded-xl border p-2.5 cursor-pointer transition ${
+                      voiceEngine === 'gemini_studio'
+                        ? 'border-indigo-500 bg-white shadow-sm ring-1 ring-indigo-500/20'
+                        : 'border-slate-200/80 bg-white/60 hover:bg-white'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="voiceEngine"
+                      checked={voiceEngine === 'gemini_studio'}
+                      onChange={() => {
+                        setVoiceEngine('gemini_studio');
+                        setVoiceEnginePreference('gemini_studio');
+                      }}
+                      className="mt-0.5 h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-800">🤖 Gemini 2.5 Studio AI Voice</div>
+                      <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
+                        Generates high-definition audio on-demand via Gemini API using native teacher pacing (requires your Gemini API Key entered above).
+                      </p>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => {
+                      setVoiceEngine('server_cached');
+                      setVoiceEnginePreference('server_cached');
+                    }}
+                    className={`flex items-start gap-2.5 rounded-xl border p-2.5 cursor-pointer transition ${
+                      voiceEngine === 'server_cached'
+                        ? 'border-indigo-500 bg-white shadow-sm ring-1 ring-indigo-500/20'
+                        : 'border-slate-200/80 bg-white/60 hover:bg-white'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="voiceEngine"
+                      checked={voiceEngine === 'server_cached'}
+                      onChange={() => {
+                        setVoiceEngine('server_cached');
+                        setVoiceEnginePreference('server_cached');
+                      }}
+                      className="mt-0.5 h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-800">💾 Pre-Cached Audio Clips</div>
+                      <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
+                        Plays pre-downloaded sound files from Firestore and local IndexedDB cache.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
               {/* Zero-Token Word Bank & Pre-Created Neural TTS Cache Status */}
               <div className="mt-6 rounded-2xl border-2 border-emerald-100 bg-emerald-50/50 p-4 text-xs text-slate-700">
                 <div className="flex items-center justify-between gap-2">
@@ -961,38 +1082,76 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
+                    disabled={cachingAudio}
                     onClick={async () => {
-                      const allWords = [
-                        ...(EXPANSIVE_WORDS_BY_LEVEL[1] || []),
-                        ...(EXPANSIVE_WORDS_BY_LEVEL[2] || []),
-                        ...(EXPANSIVE_WORDS_BY_LEVEL[3] || []),
-                        ...(EXPANSIVE_WORDS_BY_LEVEL[4] || []),
-                        ...(EXPANSIVE_WORDS_BY_LEVEL[5] || []),
-                      ];
-                      if (isAdmin) {
-                        for (let lvl = 1; lvl <= 5; lvl++) {
-                          await seedWordBankLevelToFirestore(lvl, EXPANSIVE_WORDS_BY_LEVEL[lvl] || []).catch(() => {});
+                      setCachingAudio(true);
+                      try {
+                        const allWords = [
+                          ...(EXPANSIVE_WORDS_BY_LEVEL[1] || []),
+                          ...(EXPANSIVE_WORDS_BY_LEVEL[2] || []),
+                          ...(EXPANSIVE_WORDS_BY_LEVEL[3] || []),
+                          ...(EXPANSIVE_WORDS_BY_LEVEL[4] || []),
+                          ...(EXPANSIVE_WORDS_BY_LEVEL[5] || []),
+                        ];
+                        if (isAdmin) {
+                          for (let lvl = 1; lvl <= 5; lvl++) {
+                            await seedWordBankLevelToFirestore(lvl, EXPANSIVE_WORDS_BY_LEVEL[lvl] || []).catch(() => {});
+                          }
                         }
-                      }
-                      let done = 0;
-                      for (let i = 0; i < allWords.length; i += 20) {
-                        const batch = allWords.slice(i, i + 20);
+                        let done = 0;
                         setTestResult({
                           success: true,
-                          message: `Pre-creating Neural TTS ('AvaNeural') for all 600 words: ${done} / ${allWords.length} cached in Firestore & IndexedDB...`,
+                          message: `Starting pre-cache: 0 / ${allWords.length} cached in Firestore & IndexedDB...`,
                         });
-                        const count = await prewarmRoundAudio(batch, 'Kore', 20);
-                        done += count;
+                        for (let i = 0; i < allWords.length; i += 20) {
+                          const batch = allWords.slice(i, i + 20);
+                          const count = await prewarmRoundAudio(batch, 'Kore', 20);
+                          done += count;
+                          setTestResult({
+                            success: true,
+                            message: `Pre-creating TTS audio: ${done} / ${allWords.length} cached in Firestore & IndexedDB...`,
+                          });
+                        }
+                        setTestResult({
+                          success: true,
+                          message: `Done! ${done} / ${allWords.length} words pre-created and cached in IndexedDB & Firestore!`,
+                        });
+                      } catch (err) {
+                        setTestResult({
+                          success: false,
+                          message: `Pre-caching encountered an error: ${err instanceof Error ? err.message : String(err)}`,
+                        });
+                      } finally {
+                        setCachingAudio(false);
                       }
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold text-white shadow-sm transition ${
+                      cachingAudio
+                        ? 'bg-slate-400 cursor-not-allowed'
+                        : 'bg-emerald-600 hover:bg-emerald-700'
+                    }`}
+                  >
+                    {cachingAudio ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    {cachingAudio ? 'Pre-Caching Words Audio...' : 'Pre-Cache All 600 Words Audio into Firestore'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await clearIdbAudio();
                       setTestResult({
                         success: true,
-                        message: `Done! ${done} / ${allWords.length} words pre-created with Neural TTS and cached in IndexedDB & Firestore!`,
+                        message: 'Cleared local audio cache! SpellBuddy is now using your device\'s expressive Natural Neural Voice.',
                       });
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 transition"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition"
                   >
-                    <Download className="h-3.5 w-3.5" />
-                    Pre-Cache All 600 Words Audio into Firestore
+                    <Trash2 className="h-3.5 w-3.5 text-slate-500" />
+                    Clear Local Audio Cache
                   </button>
                 </div>
               </div>

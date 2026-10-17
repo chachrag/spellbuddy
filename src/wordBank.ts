@@ -8,7 +8,7 @@ import {
 
 export const COMPREHENSIVE_WORD_BANK: Record<number, WordItem[]> = EXPANSIVE_WORDS_BY_LEVEL;
 
-export { getTotalWordBankCount, getRandomSessionTheme };
+export { EXPANSIVE_WORDS_BY_LEVEL, getTotalWordBankCount, getRandomSessionTheme };
 
 /**
  * Returns a truly randomized 10-word session list for the given difficulty level
