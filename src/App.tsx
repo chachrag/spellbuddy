@@ -25,6 +25,7 @@ import {
   BarChart3,
   LogIn,
   Home,
+  RotateCcw,
 } from 'lucide-react';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import {
@@ -99,6 +100,7 @@ export default function App() {
   const [words, setWords] = useState<WordItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [revealedIndices, setRevealedIndices] = useState<Record<number, boolean>>({});
+  const [spokenIndices, setSpokenIndices] = useState<Record<number, boolean>>({});
   const [loadingWords, setLoadingWords] = useState(false);
   const [speakingMode, setSpeakingMode] = useState<'none' | 'word' | 'phonetic' | 'reveal'>('none');
   const [roundSource, setRoundSource] = useState<'ai' | 'adaptive_bank'>('adaptive_bank');
@@ -254,6 +256,12 @@ export default function App() {
     }
   };
 
+  const getWordColor = (wordNum: number) => {
+    return wordNum % 2 !== 0
+      ? 'bg-sky-500 hover:bg-sky-600 ring-4 ring-sky-200 text-white shadow-sky-200'
+      : 'bg-purple-600 hover:bg-purple-700 ring-4 ring-purple-200 text-white shadow-purple-200';
+  };
+
   const playWordAudio = async (wordItem: WordItem, index: number, voice = selectedVoice) => {
     const promptDirection = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
     const fallbackText = `${wordItem.word}. ${wordItem.exampleSentence}. Spell ${wordItem.word}.`;
@@ -266,23 +274,44 @@ export default function App() {
     }
 
     setSpeakingMode('word');
-    await speakWithGeminiTTS(
-      promptDirection,
-      fallbackText,
-      cacheKey,
-      voice,
-      () => setSpeakingMode('none')
-    );
+    try {
+      await speakWithGeminiTTS(
+        promptDirection,
+        fallbackText,
+        cacheKey,
+        voice,
+        () => {
+          setSpeakingMode('none');
+          setSpokenIndices((prev) => ({ ...prev, [index]: true }));
+        }
+      );
+    } catch {
+      setSpeakingMode('none');
+      setSpokenIndices((prev) => ({ ...prev, [index]: true }));
+    }
   };
 
   const handlePlayWord = () => {
+    if (speakingMode !== 'none') return;
     unlockAudioOnIOS();
     const current = words[currentIndex];
     if (!current) return;
     playWordAudio(current, currentIndex);
   };
 
+  const handlePlayNextWord = (nextIndex: number) => {
+    if (speakingMode !== 'none') return;
+    unlockAudioOnIOS();
+    stopCurrentAudio();
+    setCurrentIndex(nextIndex);
+    const targetWord = words[nextIndex];
+    if (targetWord) {
+      playWordAudio(targetWord, nextIndex);
+    }
+  };
+
   const handleRevealSpelling = () => {
+    if (speakingMode !== 'none') return;
     stopCurrentAudio();
     setSpeakingMode('none');
     setRevealedIndices((prev) => ({ ...prev, [currentIndex]: true }));
@@ -293,6 +322,7 @@ export default function App() {
     setGradingResponse(null);
     setCapturedImage(null);
     setRevealedIndices({});
+    setSpokenIndices({});
     setCurrentIndex(0);
     stopCurrentAudio();
 
@@ -329,6 +359,7 @@ export default function App() {
       setRoundSource(res.source);
       if (res.theme) setRoundTheme(res.theme);
       setRevealedIndices({});
+      setSpokenIndices({});
       setCurrentIndex(0);
       setRefreshSuccessNote(`Refreshed with 10 brand-new words for Level ${profile.difficultyLevel}!`);
       setTimeout(() => setRefreshSuccessNote(null), 3500);
@@ -340,6 +371,7 @@ export default function App() {
   };
 
   const goToWord = (index: number) => {
+    if (speakingMode !== 'none') return;
     stopCurrentAudio();
     setCurrentIndex(index);
   };
@@ -975,140 +1007,200 @@ export default function App() {
         )}
 
         {/* STAGE 2: 10-WORD AUDIO ROUND */}
-        {stage === 'round' && currentWord && (
-          <div className="rounded-3xl border-4 border-sky-200 bg-white p-6 shadow-xl sm:p-8">
-            {/* Progress Pills 1..10 & Round Refresh */}
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-5">
-              <div className="flex items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={handleReturnHome}
-                  className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition shadow-sm"
-                  title="Return to Home Screen"
-                >
-                  <Home className="h-3.5 w-3.5 text-slate-600" />
-                  <span>Home</span>
-                </button>
-                <span className="text-sm font-bold uppercase tracking-wider text-sky-600">
-                  Word {currentIndex + 1} of {words.length}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    startNewRound(undefined, true);
-                  }}
-                  disabled={loadingWords}
-                  className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 transition shadow-sm"
-                  title="Randomly generate 10 completely new words for this session"
-                >
-                  <RefreshCw className={`h-3 w-3 ${loadingWords ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">Refresh Words</span>
-                </button>
-                <div className="flex flex-wrap gap-1.5">
-                  {words.map((_, idx) => (
+        {/* STAGE 2: 10-WORD AUDIO ROUND */}
+        {stage === 'round' && currentWord && (() => {
+          const hasSpokenCurrent = Boolean(spokenIndices[currentIndex]);
+          const currentWordNum = currentIndex + 1;
+          const nextWordNum = currentIndex + 2;
+
+          return (
+            <div className="rounded-3xl border-4 border-sky-200 bg-white p-6 shadow-xl sm:p-8">
+              {/* Progress Pills 1..10 & Round Refresh */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-5">
+                <div className="flex items-center gap-2.5">
                   <button
-                    key={idx}
-                    onClick={() => goToWord(idx)}
-                    className={`h-8 w-8 rounded-full text-xs font-bold transition ${
-                      idx === currentIndex
-                        ? 'bg-sky-500 text-white ring-4 ring-sky-200'
-                        : revealedIndices[idx]
-                        ? 'bg-amber-100 text-amber-800'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    type="button"
+                    onClick={handleReturnHome}
+                    disabled={speakingMode !== 'none'}
+                    className={`inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition shadow-sm ${
+                      speakingMode !== 'none' ? 'opacity-40 cursor-not-allowed' : ''
                     }`}
+                    title="Return to Home Screen"
                   >
-                    {idx + 1}
+                    <Home className="h-3.5 w-3.5 text-slate-600" />
+                    <span>Home</span>
                   </button>
-                ))}
+                  <span className="text-sm font-bold uppercase tracking-wider text-sky-600">
+                    Word {currentWordNum} of {words.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      startNewRound(undefined, true);
+                    }}
+                    disabled={loadingWords || speakingMode !== 'none'}
+                    className={`flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 transition shadow-sm ${
+                      speakingMode !== 'none' ? 'opacity-40 cursor-not-allowed' : ''
+                    }`}
+                    title="Randomly generate 10 completely new words for this session"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${loadingWords ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline">Refresh Words</span>
+                  </button>
+                  <div className="flex flex-wrap gap-1.5">
+                    {words.map((_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => goToWord(idx)}
+                        disabled={speakingMode !== 'none'}
+                        className={`h-8 w-8 rounded-full text-xs font-bold transition ${
+                          idx === currentIndex
+                            ? 'bg-sky-500 text-white ring-4 ring-sky-200'
+                            : revealedIndices[idx]
+                            ? 'bg-amber-100 text-amber-800'
+                            : spokenIndices[idx]
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        } ${speakingMode !== 'none' ? 'opacity-40 cursor-not-allowed' : ''}`}
+                        title={
+                          speakingMode !== 'none'
+                            ? 'Speaking in progress...'
+                            : `Go to Word #${idx + 1}`
+                        }
+                      >
+                        {idx + 1}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Main Audio Controls */}
+              <div className="my-8 flex flex-col items-center text-center">
+                <p className="mb-5 text-sm font-semibold text-slate-500">
+                  Write word #{currentWordNum} on your paper:
+                </p>
+
+                <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 min-h-[96px] transition-all duration-500">
+                  {/* STATE 1: Unplayed and not speaking */}
+                  {!hasSpokenCurrent && speakingMode !== 'word' && (
+                    <button
+                      onClick={handlePlayWord}
+                      className={`flex items-center gap-3 rounded-3xl px-8 py-5 text-2xl font-bold shadow-lg transition-all duration-500 hover:scale-105 active:scale-95 ${getWordColor(
+                        currentWordNum
+                      )}`}
+                    >
+                      <Volume2 className="h-8 w-8" />
+                      Play Word # {currentWordNum}
+                    </button>
+                  )}
+
+                  {/* STATE 2: Speaking Word for first time (keep current UI) */}
+                  {!hasSpokenCurrent && speakingMode === 'word' && (
+                    <button
+                      disabled
+                      className="flex items-center gap-3 rounded-3xl px-8 py-5 text-2xl font-bold text-white shadow-lg bg-indigo-600 ring-4 ring-indigo-200 transition-all duration-500 cursor-wait"
+                    >
+                      <Volume2 className="h-8 w-8 animate-pulse" />
+                      Speaking...
+                    </button>
+                  )}
+
+                  {/* STATE 3: Speaking done -> Left Replay circular button + Center Next Play button */}
+                  {hasSpokenCurrent && (
+                    <>
+                      {/* Left Circular Replay Button */}
+                      <button
+                        onClick={handlePlayWord}
+                        disabled={speakingMode !== 'none'}
+                        className={`h-20 w-20 sm:h-24 sm:w-24 shrink-0 rounded-full border-2 shadow-md flex flex-col items-center justify-center p-1.5 transition-all duration-500 ease-out animate-in fade-in zoom-in-75 hover:scale-105 active:scale-95 disabled:cursor-not-allowed ${
+                          speakingMode === 'word'
+                            ? 'border-indigo-400 bg-indigo-600 text-white ring-4 ring-indigo-200 cursor-wait'
+                            : 'border-indigo-200 bg-white hover:bg-indigo-50 text-indigo-700'
+                        }`}
+                        title={`Replay Word #${currentWordNum}`}
+                      >
+                        {speakingMode === 'word' ? (
+                          <>
+                            <Volume2 className="h-6 w-6 animate-pulse text-white mb-0.5" />
+                            <span className="text-[10px] sm:text-[11px] font-extrabold text-white text-center leading-tight">
+                              Speaking...
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <RotateCcw className="h-5 w-5 sm:h-6 sm:w-6 text-indigo-600 mb-0.5" />
+                            <span className="text-[10px] sm:text-[11px] font-extrabold text-indigo-950 text-center leading-tight">
+                              Replay<br />Word #{currentWordNum}
+                            </span>
+                          </>
+                        )}
+                      </button>
+
+                      {/* Center Space: Alternating Color Play Next Word / Finished Button */}
+                      {currentIndex < words.length - 1 ? (
+                        <button
+                          onClick={() => handlePlayNextWord(currentIndex + 1)}
+                          disabled={speakingMode !== 'none'}
+                          className={`flex items-center gap-3 rounded-3xl px-8 py-5 text-xl sm:text-2xl font-bold shadow-lg transition-all duration-500 ease-out animate-in fade-in zoom-in-95 hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${getWordColor(
+                            nextWordNum
+                          )}`}
+                        >
+                          <Volume2 className="h-8 w-8" />
+                          Play Word # {nextWordNum}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            stopCurrentAudio();
+                            setSpeakingMode('none');
+                            setStage('capture');
+                          }}
+                          disabled={speakingMode !== 'none'}
+                          className="flex items-center gap-3 rounded-3xl bg-emerald-500 hover:bg-emerald-600 ring-4 ring-emerald-200 text-white shadow-lg shadow-emerald-200 px-8 py-5 text-xl sm:text-2xl font-bold transition-all duration-500 ease-out animate-in fade-in zoom-in-95 hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Camera className="h-8 w-8" />
+                          Finished Writing! Grade Paper
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Reveal Spelling Option */}
+                <div className="mt-8 w-full max-w-md rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-4">
+                  {!isCurrentRevealed ? (
+                    <button
+                      onClick={handleRevealSpelling}
+                      disabled={speakingMode !== 'none'}
+                      className="inline-flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Eye className="h-4 w-4" />
+                      Reveal Spelling
+                    </button>
+                  ) : (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                        Spelling Revealed (Queued for repeat practice!):
+                      </p>
+                      <div className="mt-2 flex flex-wrap justify-center gap-1.5">
+                        {currentWord.word.split('').map((letter, i) => (
+                          <span
+                            key={i}
+                            className="flex h-10 w-9 items-center justify-center rounded-xl bg-white font-mono text-xl font-bold uppercase text-slate-800 shadow border border-amber-300"
+                          >
+                            {letter}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* Main Audio Controls */}
-            <div className="my-8 flex flex-col items-center text-center">
-              <p className="mb-4 text-sm font-semibold text-slate-500">
-                Write word #{currentIndex + 1} on your paper:
-              </p>
-
-              <div className="flex flex-wrap items-center justify-center gap-4">
-                {/* Primary Play Word Button */}
-                <button
-                  onClick={handlePlayWord}
-                  className={`flex items-center gap-3 rounded-3xl px-8 py-5 text-2xl font-bold text-white shadow-lg transition hover:scale-105 active:scale-95 ${
-                    speakingMode === 'word'
-                      ? 'bg-indigo-600 ring-4 ring-indigo-200'
-                      : 'bg-sky-500 hover:bg-sky-600'
-                  }`}
-                >
-                  <Volume2
-                    className={`h-8 w-8 ${speakingMode === 'word' ? 'animate-pulse' : ''}`}
-                  />
-                  {speakingMode === 'word' ? 'Speaking...' : 'Play Word'}
-                </button>
-              </div>
-
-              {/* Reveal Spelling Option */}
-              <div className="mt-8 w-full max-w-md rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-4">
-                {!isCurrentRevealed ? (
-                  <button
-                    onClick={handleRevealSpelling}
-                    className="inline-flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-800"
-                  >
-                    <Eye className="h-4 w-4" />
-                    Reveal Spelling
-                  </button>
-                ) : (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                      Spelling Revealed (Queued for repeat practice!):
-                    </p>
-                    <div className="mt-2 flex flex-wrap justify-center gap-1.5">
-                      {currentWord.word.split('').map((letter, i) => (
-                        <span
-                          key={i}
-                          className="flex h-10 w-9 items-center justify-center rounded-xl bg-white font-mono text-xl font-bold uppercase text-slate-800 shadow border border-amber-300"
-                        >
-                          {letter}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Round Navigation Bar */}
-            <div className="flex items-center justify-between border-t border-slate-100 pt-5">
-              <button
-                onClick={() => goToWord(Math.max(0, currentIndex - 1))}
-                disabled={currentIndex === 0}
-                className="flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Previous Word
-              </button>
-
-              {currentIndex < words.length - 1 ? (
-                <button
-                  onClick={() => goToWord(currentIndex + 1)}
-                  className="flex items-center gap-2 rounded-xl bg-sky-500 px-6 py-2.5 text-sm font-bold text-white shadow transition hover:bg-sky-600"
-                >
-                  Next Word
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-              ) : (
-                <button
-                  onClick={() => setStage('capture')}
-                  className="flex items-center gap-2 rounded-xl bg-emerald-500 px-6 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-600 hover:scale-105"
-                >
-                  Finished Writing! Grade Paper
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* STAGE 3: CAPTURE / UPLOAD WORKSHEET */}
         {stage === 'capture' && (
