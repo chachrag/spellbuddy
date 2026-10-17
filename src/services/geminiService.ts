@@ -87,14 +87,24 @@ export function getRequestHeaders(): Record<string, string> {
   return headers;
 }
 
-// Shared Web Audio API context & in-memory AudioBuffer cache for instant replays
+// Shared HTML5 Audio & Web Audio API fallback for instant, Bluetooth/AirPods-safe playback
 let audioContext: AudioContext | null = null;
 let activeSourceNode: AudioBufferSourceNode | null = null;
+let activeHtmlAudio: HTMLAudioElement | null = null;
+const audioBase64Cache = new Map<string, string>();
 const audioBufferCache = new Map<string, AudioBuffer>();
-const inflightRequests = new Map<string, Promise<AudioBuffer>>();
+const inflightBase64Requests = new Map<string, Promise<string>>();
+
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
 
 function getAudioContext(): AudioContext {
-  if (!audioContext) {
+  if (!audioContext || audioContext.state === 'closed') {
     const AudioCtx =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -108,22 +118,35 @@ function getAudioContext(): AudioContext {
   return audioContext!;
 }
 
+// If Bluetooth headphones (e.g. AirPods) connect/disconnect on macOS, reset any cached AudioContext
+// so it re-binds to the new hardware output sink and sample rate.
+if (typeof navigator !== 'undefined' && navigator.mediaDevices?.addEventListener) {
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    if (audioContext) {
+      try {
+        audioContext.close().catch(() => {});
+      } catch {}
+      audioContext = null;
+    }
+  });
+}
+
 let hasUnlockedIOSAudio = false;
 
 /**
- * Synchronously unlocks iOS WebKit AudioContext and SpeechSynthesis audio engines.
- * Must be executed synchronously within user interaction touchstart/click event.
+ * Synchronously unlocks iOS WebKit AudioContext and SpeechSynthesis audio engines once on iOS/iPadOS.
+ * No-op on macOS/desktop so Bluetooth (AirPods) CoreAudio routing is never disrupted by dummy buffers.
  */
 export function unlockAudioOnIOS(): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || hasUnlockedIOSAudio || !isIOSDevice()) return;
+  hasUnlockedIOSAudio = true;
 
-  // 1. Unlock Web Audio Context
+  // 1. Unlock Web Audio Context on iOS
   try {
     const ctx = getAudioContext();
     if (ctx.state === 'suspended') {
       ctx.resume().catch(() => {});
     }
-    // Play a 1-sample silent buffer to unlock the hardware audio pipeline
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -135,22 +158,21 @@ export function unlockAudioOnIOS(): void {
   if ('speechSynthesis' in window) {
     try {
       window.speechSynthesis.resume();
-      if (!hasUnlockedIOSAudio) {
-        hasUnlockedIOSAudio = true;
-        const dummy = new SpeechSynthesisUtterance(' ');
-        dummy.volume = 0.01;
-        dummy.rate = 10;
-        dummy.lang = 'en-US';
-        window.speechSynthesis.speak(dummy);
-      }
+      const dummy = new SpeechSynthesisUtterance(' ');
+      dummy.volume = 0.01;
+      dummy.rate = 10;
+      dummy.lang = 'en-US';
+      window.speechSynthesis.speak(dummy);
     } catch {}
   }
 }
 
-// Automatically install global touch listeners to prime audio on any early touch
-if (typeof window !== 'undefined') {
+// Automatically install one-time touch listener on iOS/iPadOS to prime audio on first touch
+if (typeof window !== 'undefined' && isIOSDevice()) {
   const primeHandler = () => {
     unlockAudioOnIOS();
+    window.removeEventListener('touchstart', primeHandler, true);
+    window.removeEventListener('click', primeHandler, true);
   };
   window.addEventListener('touchstart', primeHandler, { passive: true, capture: true });
   window.addEventListener('click', primeHandler, { passive: true, capture: true });
@@ -198,9 +220,17 @@ async function decodeAudioDataOrPCM(base64Data: string, ctx: AudioContext): Prom
 }
 
 /**
- * Stops any currently playing Gemini audio or browser fallback speech safely without deadlocking iOS speech queue.
+ * Stops any currently playing HTML5 audio, Web Audio buffer, or browser fallback speech safely.
  */
 export function stopCurrentAudio(): void {
+  if (activeHtmlAudio) {
+    try {
+      activeHtmlAudio.pause();
+      activeHtmlAudio.currentTime = 0;
+      activeHtmlAudio.src = '';
+    } catch {}
+    activeHtmlAudio = null;
+  }
   if (activeSourceNode) {
     try {
       activeSourceNode.stop();
@@ -229,50 +259,46 @@ export function onTTSError(listener: TTSErrorListener): () => void {
 }
 
 /**
- * Fetches and caches an AudioBuffer for a specific cacheKey.
+ * Fetches and caches base64 MP3 audio for a specific cacheKey.
  * Uses a 4-layer zero-token cache hierarchy:
- * 1. In-memory AudioBuffer cache (0ms)
+ * 1. In-memory base64 cache (0ms)
  * 2. Browser IndexedDB persistent cache (0 network / 0 Firestore reads)
  * 3. Firestore /tts_cache/{wordKey} shared pre-created audio
  * 4. Server /api/spelling/tts (0-token Studio MP3 speech), then persists to IndexedDB + Firestore
  */
-async function getOrFetchTTSBuffer(
+async function getOrFetchTTSBase64(
   promptDirection: string,
   cacheKey: string,
   voiceName: StudioVoice
-): Promise<AudioBuffer> {
+): Promise<string> {
   const normalizedWordKey = cacheKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
 
-  const cached = audioBufferCache.get(normalizedWordKey);
+  const cached = audioBase64Cache.get(normalizedWordKey);
   if (cached) {
     return cached;
   }
 
-  const existingInflight = inflightRequests.get(normalizedWordKey);
+  const existingInflight = inflightBase64Requests.get(normalizedWordKey);
   if (existingInflight) {
     return existingInflight;
   }
 
   const fetchPromise = (async () => {
-    const ctx = getAudioContext();
-
     // 1. Check client IndexedDB persistent cache
     const localBase64 = await getIdbAudio(normalizedWordKey);
     if (localBase64) {
-      const buffer = await decodeAudioDataOrPCM(localBase64, ctx);
-      audioBufferCache.set(normalizedWordKey, buffer);
-      inflightRequests.delete(normalizedWordKey);
-      return buffer;
+      audioBase64Cache.set(normalizedWordKey, localBase64);
+      inflightBase64Requests.delete(normalizedWordKey);
+      return localBase64;
     }
 
     // 2. Check Firestore shared pre-created TTS cache
     const firestoreBase64 = await getCachedTtsFromFirestore(normalizedWordKey);
     if (firestoreBase64) {
       setIdbAudio(normalizedWordKey, firestoreBase64).catch(() => {});
-      const buffer = await decodeAudioDataOrPCM(firestoreBase64, ctx);
-      audioBufferCache.set(normalizedWordKey, buffer);
-      inflightRequests.delete(normalizedWordKey);
-      return buffer;
+      audioBase64Cache.set(normalizedWordKey, firestoreBase64);
+      inflightBase64Requests.delete(normalizedWordKey);
+      return firestoreBase64;
     }
 
     // 3. Fetch from server TTS endpoint (uses 0-token studio MP3 by default)
@@ -309,36 +335,29 @@ async function getOrFetchTTSBuffer(
 
     // Save to client IndexedDB and Firestore /tts_cache for all future sessions
     setIdbAudio(normalizedWordKey, base64Audio).catch(() => {});
-    const targetWord = cacheKey.replace(/^word-/i, '').toLowerCase();
+    const targetWord = cacheKey.replace(/^word[-_]/i, '').toLowerCase();
     saveCachedTtsToFirestore(normalizedWordKey, targetWord, 'studio', base64Audio, audioFormat).catch(() => {});
 
-    const buffer = await decodeAudioDataOrPCM(base64Audio, ctx);
-    audioBufferCache.set(normalizedWordKey, buffer);
-    inflightRequests.delete(normalizedWordKey);
-    return buffer;
+    audioBase64Cache.set(normalizedWordKey, base64Audio);
+    inflightBase64Requests.delete(normalizedWordKey);
+    return base64Audio;
   })();
 
-  inflightRequests.set(normalizedWordKey, fetchPromise);
+  inflightBase64Requests.set(normalizedWordKey, fetchPromise);
 
   try {
     return await fetchPromise;
   } catch (err) {
-    inflightRequests.delete(normalizedWordKey);
+    inflightBase64Requests.delete(normalizedWordKey);
     throw err;
   }
 }
 
-
-
-/**
- * Speaks text using Gemini 2.5 Flash Native TTS with Web AudioBuffer caching for instant replays.
- * When Gemini TTS fails, logs the exact error and notifies error listeners (no silent speechSynthesis fallback).
- */
 let geminiTtsQuotaHit = false;
 
 /**
- * Speaks text using Gemini 2.5 Flash Native TTS with Web AudioBuffer caching for instant replays.
- * If Gemini TTS quota is exceeded, seamlessly switches to tuned browser speech with authentic child pitch.
+ * Speaks text using cached MP3 audio via standard HTML5 Audio (with Web Audio fallback).
+ * HTML5 Audio seamlessly follows macOS CoreAudio and Bluetooth (AirPods) output device routing.
  */
 export async function speakWithGeminiTTS(
   promptDirection: string,
@@ -347,50 +366,73 @@ export async function speakWithGeminiTTS(
   voiceName: StudioVoice = 'Puck',
   onEnded?: () => void
 ): Promise<void> {
-  // 1. Immediately unlock iOS audio within the direct user interaction frame
   unlockAudioOnIOS();
   stopCurrentAudio();
 
-  // If server quota is known to be exceeded and user hasn't supplied a custom key,
-  // speak via browser immediately to avoid an async roundtrip that could expire iOS user gesture
   if (geminiTtsQuotaHit && !getCustomApiKey()) {
     playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
     return;
   }
 
   try {
-    const ctx = getAudioContext();
-    if (ctx.state === 'suspended') {
-      await ctx.resume().catch(() => {});
-    }
+    const base64Audio = await getOrFetchTTSBase64(promptDirection, cacheKey, voiceName);
 
-    const buffer = await getOrFetchTTSBuffer(promptDirection, cacheKey, voiceName);
+    // Primary path: standard HTML5 Audio element (handles macOS + AirPods Bluetooth routing natively)
+    try {
+      const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
+      audio.preload = 'auto';
+      activeHtmlAudio = audio;
 
-    if (ctx.state === 'suspended') {
-      await ctx.resume().catch(() => {});
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    // Keep playbackRate at natural 1.0 for studio-quality human speech (avoids robotic chipmunk distortion)
-    source.playbackRate.value = 1.0;
-    source.connect(ctx.destination);
-    activeSourceNode = source;
-
-    source.onended = () => {
-      if (activeSourceNode === source) {
-        activeSourceNode = null;
+      await new Promise<void>((resolve, reject) => {
+        audio.onended = () => {
+          if (activeHtmlAudio === audio) {
+            activeHtmlAudio = null;
+          }
+          onEnded?.();
+          resolve();
+        };
+        audio.onerror = () => {
+          if (activeHtmlAudio === audio) {
+            activeHtmlAudio = null;
+          }
+          reject(new Error('HTML5 audio element failed to decode stream'));
+        };
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(reject);
+        }
+      });
+      return;
+    } catch {
+      // Fallback to Web Audio API if stream is raw PCM or HTML5 Audio was blocked
+      const normalizedWordKey = cacheKey.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') {
+        await ctx.resume().catch(() => {});
       }
-      onEnded?.();
-    };
-
-    source.start(0);
+      let buffer = audioBufferCache.get(normalizedWordKey);
+      if (!buffer) {
+        buffer = await decodeAudioDataOrPCM(base64Audio, ctx);
+        audioBufferCache.set(normalizedWordKey, buffer);
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = 1.0;
+      source.connect(ctx.destination);
+      activeSourceNode = source;
+      source.onended = () => {
+        if (activeSourceNode === source) {
+          activeSourceNode = null;
+        }
+        onEnded?.();
+      };
+      source.start(0);
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/quota|429|resource_exhausted/i.test(msg)) {
       geminiTtsQuotaHit = true;
     }
-    // Seamlessly pronounce via browser speech with natural human voice
     playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
   }
 }
@@ -488,27 +530,31 @@ export function playWithBrowserSpeech(
  * Silently pre-creates and caches MP3 TTS audio for a list of words (0 Gemini tokens)
  * into client IndexedDB and Firestore /tts_cache so "Play Word" is instantaneous.
  */
-export async function prewarmRoundAudio(words: WordItem[]): Promise<number> {
+export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice): Promise<number> {
   if (typeof window === 'undefined' || !Array.isArray(words) || words.length === 0) return 0;
 
   const missingItems: Array<{ word: string; exampleSentence: string; key: string }> = [];
 
   for (const w of words) {
-    const cleanWord = w.word.toLowerCase().trim();
+    const cleanWord = w.word.toLowerCase().trim().replace(/[^a-z0-9_-]/g, '_');
     const key = `word_${cleanWord}`;
-    if (audioBufferCache.has(key)) continue;
+    if (audioBase64Cache.has(key)) continue;
 
     const idbHit = await getIdbAudio(key);
-    if (idbHit) continue;
+    if (idbHit) {
+      audioBase64Cache.set(key, idbHit);
+      continue;
+    }
 
     const fsHit = await getCachedTtsFromFirestore(key);
     if (fsHit) {
+      audioBase64Cache.set(key, fsHit);
       await setIdbAudio(key, fsHit);
       continue;
     }
 
     missingItems.push({
-      word: cleanWord,
+      word: w.word.toLowerCase().trim(),
       exampleSentence: w.exampleSentence,
       key,
     });
@@ -536,6 +582,7 @@ export async function prewarmRoundAudio(words: WordItem[]): Promise<number> {
         const item = generated[m.word];
         if (item?.audio) {
           cachedCount += 1;
+          audioBase64Cache.set(m.key, item.audio);
           await setIdbAudio(m.key, item.audio);
           saveCachedTtsToFirestore(m.key, m.word, 'studio', item.audio, item.format || 'audio/mp3').catch(() => {});
         }
