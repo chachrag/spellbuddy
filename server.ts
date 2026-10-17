@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
@@ -543,9 +544,41 @@ async function fetchNaturalStudioSpeech(text: string): Promise<string | null> {
   }
 }
 
-// 2. Text-to-Speech audio generation (Gemini Native TTS WAV when useGeminiTts !== false, or Studio MP3 fallback)
+/**
+ * Reads the pre-generated Microsoft Edge Neural TTS ('en-US-AvaNeural') MP3 for any of the 600 words
+ * directly from public/tts/<word>.mp3 (or dist/tts/<word>.mp3 in production builds).
+ */
+function readBundledEdgeNeuralMp3(wordOrText: string): string | null {
+  const trimmed = wordOrText.trim();
+  // Extract target word either from plain word ("apple") or full sentence ("apple. The crisp... Spell apple.")
+  let candidate = trimmed.split(/[.!?\s]/)[0]?.toLowerCase().replace(/[^a-z0-9_-]/g, '') || '';
+  if (!candidate) {
+    const spellMatch = trimmed.match(/Spell\s+([a-zA-Z]+)\.?$/i);
+    if (spellMatch) {
+      candidate = spellMatch[1].toLowerCase();
+    }
+  }
+  if (!candidate) return null;
+
+  const publicPath = path.resolve(__dirname, 'public', 'tts', `${candidate}.mp3`);
+  const distPath = path.resolve(__dirname, 'dist', 'tts', `${candidate}.mp3`);
+  const targetPath = fs.existsSync(publicPath)
+    ? publicPath
+    : fs.existsSync(distPath)
+    ? distPath
+    : null;
+
+  if (!targetPath) return null;
+  try {
+    return fs.readFileSync(targetPath).toString('base64');
+  } catch {
+    return null;
+  }
+}
+
+// 2. Text-to-Speech audio generation (Gemini Native TTS WAV when useGeminiTts !== false, or bundled Edge Neural MP3)
 app.post('/api/spelling/tts', async (req, res) => {
-  const { prompt, text, voice, useGeminiTts = true } = req.body;
+  const { prompt, text, voice, useGeminiTts = false } = req.body;
   const rawText = prompt || text;
   if (!rawText) {
     return res.status(400).json({ error: 'No text provided for TTS.' });
@@ -554,7 +587,7 @@ app.post('/api/spelling/tts', async (req, res) => {
   const voiceName = getValidVoice(voice);
   const cacheKey = useGeminiTts
     ? `gemini_v4_${voiceName}:${textToSpeak.toLowerCase()}`
-    : `studio_v3:${textToSpeak.toLowerCase()}`;
+    : `ava_v4:${textToSpeak.toLowerCase()}`;
 
   // 0. Check server in-memory TTS cache first
   const cached = serverTtsCache.get(cacheKey);
@@ -572,28 +605,37 @@ app.post('/api/spelling/tts', async (req, res) => {
     }
   }
 
-  // 2. Secondary Path: Edge Neural Speech (when reachable outside datacenter IPs)
+  // 2. Pre-generated Microsoft Edge Neural TTS ('en-US-AvaNeural') bundled in public/tts/<word>.mp3 (0ms, 0 tokens, studio human quality)
+  const bundledMp3 = readBundledEdgeNeuralMp3(textToSpeak);
+  if (bundledMp3) {
+    const entry = { audio: bundledMp3, format: 'audio/mp3' };
+    if (!useGeminiTts) {
+      setServerTtsCache(cacheKey, entry);
+    }
+    return res.json({ ...entry, cached: true, isFallback: Boolean(useGeminiTts) });
+  }
+
+  // 3. Secondary Path: Live Edge Neural Speech (when reachable outside datacenter IPs for custom words)
   const edgeNeuralMp3 = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
   if (edgeNeuralMp3) {
     const entry = { audio: edgeNeuralMp3, format: 'audio/mp3' };
-    setServerTtsCache(cacheKey, entry);
-    return res.json({ ...entry, cached: false });
-  }
-
-  // 3. Fallback Path: Studio MP3 Speech (marked isFallback when useGeminiTts was requested so it won't overwrite Gemini cache)
-  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
-  if (naturalFallback) {
-    const entry = { audio: naturalFallback, format: 'audio/mp3' };
     if (!useGeminiTts) {
       setServerTtsCache(cacheKey, entry);
     }
     return res.json({ ...entry, cached: false, isFallback: Boolean(useGeminiTts) });
   }
 
+  // 4. Last-resort Fallback Path: Studio MP3 Speech
+  const naturalFallback = await fetchNaturalStudioSpeech(textToSpeak);
+  if (naturalFallback) {
+    const entry = { audio: naturalFallback, format: 'audio/mp3' };
+    return res.json({ ...entry, cached: false, isFallback: true });
+  }
+
   return res.json({ audio: null, error: 'Could not generate speech audio.' });
 });
 
-// 2b. Batch Pre-Create TTS Audio for up to 25 words at a time (0 Gemini tokens)
+// 2b. Batch Pre-Create TTS Audio for up to 25 words at a time (0 Gemini tokens, serves genuine en-US-AvaNeural MP3s)
 app.post('/api/spelling/tts-batch', async (req, res) => {
   const items: Array<{ word: string; exampleSentence: string }> = Array.isArray(req.body?.items)
     ? req.body.items.slice(0, 25)
@@ -609,21 +651,27 @@ app.post('/api/spelling/tts-batch', async (req, res) => {
         if (!item?.word) return;
         const cleanWord = item.word.toLowerCase().trim();
         const textToSpeak = `${cleanWord}. ${item.exampleSentence || ''}. Spell ${cleanWord}.`;
-        const cacheKey = `neural_v3_Ava:${textToSpeak.toLowerCase()}`;
+        const cacheKey = `ava_v4:${cleanWord}`;
 
         let entry = serverTtsCache.get(cacheKey);
         if (!entry) {
-          // 1. Natural studio speech (fast ~100ms MP3)
-          const naturalAudio = await fetchNaturalStudioSpeech(textToSpeak);
-          if (naturalAudio) {
-            entry = { audio: naturalAudio, format: 'audio/mp3' };
+          // 1. Pre-generated Microsoft Edge Neural ('en-US-AvaNeural') bundled in public/tts/<word>.mp3 (instant 0ms)
+          const bundledMp3 = readBundledEdgeNeuralMp3(cleanWord);
+          if (bundledMp3) {
+            entry = { audio: bundledMp3, format: 'audio/mp3' };
             setServerTtsCache(cacheKey, entry);
           } else {
-            // 2. Edge neural speech fallback
+            // 2. Live Edge neural speech fallback (for non-bank words)
             const mp3Audio = await fetchEdgeNeuralSpeech(textToSpeak, 'en-US-AvaNeural');
             if (mp3Audio) {
               entry = { audio: mp3Audio, format: 'audio/mp3' };
               setServerTtsCache(cacheKey, entry);
+            } else {
+              // 3. Last-resort fallback
+              const naturalAudio = await fetchNaturalStudioSpeech(textToSpeak);
+              if (naturalAudio) {
+                entry = { audio: naturalAudio, format: 'audio/mp3' };
+              }
             }
           }
         }

@@ -961,7 +961,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span className="font-bold text-indigo-950">Spelling Spoken Voice Engine</span>
                   </div>
                   <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-[10px] font-bold text-indigo-800">
-                    {voiceEngine === 'device_natural' ? 'Natural Neural Voice' : voiceEngine === 'gemini_studio' ? 'Gemini AI Voice' : 'Cached Audio'}
+                    {voiceEngine === 'server_cached' ? 'Edge AvaNeural (0 Tokens)' : voiceEngine === 'device_natural' ? 'Device Neural Voice' : 'Gemini AI Voice'}
                   </span>
                 </div>
                 <p className="mt-1.5 text-slate-600 leading-relaxed">
@@ -969,6 +969,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </p>
 
                 <div className="mt-3 space-y-2">
+                  <label
+                    onClick={() => {
+                      setVoiceEngine('server_cached');
+                      setVoiceEnginePreference('server_cached');
+                    }}
+                    className={`flex items-start gap-2.5 rounded-xl border p-2.5 cursor-pointer transition ${
+                      voiceEngine === 'server_cached'
+                        ? 'border-indigo-500 bg-white shadow-sm ring-1 ring-indigo-500/20'
+                        : 'border-slate-200/80 bg-white/60 hover:bg-white'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="voiceEngine"
+                      checked={voiceEngine === 'server_cached'}
+                      onChange={() => {
+                        setVoiceEngine('server_cached');
+                        setVoiceEnginePreference('server_cached');
+                      }}
+                      className="mt-0.5 h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <span>🎙️ Microsoft Edge Neural Voice (`AvaNeural` — Recommended)</span>
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800">
+                          0 AI Tokens • Pre-Cached Studio MP3
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
+                        Plays all 600 pre-created <strong>Microsoft Edge Neural (`en-US-AvaNeural`)</strong> studio teacher recordings from bundled MP3s, Firestore (<code className="text-[10px]">/tts_cache</code>), and IndexedDB. Identical warm human voice on iPhone, iPad, Mac, and Windows.
+                      </p>
+                    </div>
+                  </label>
+
                   <label
                     onClick={() => {
                       setVoiceEngine('device_natural');
@@ -991,14 +1025,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       className="mt-0.5 h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500"
                     />
                     <div>
-                      <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                        <span>🌟 Device Natural Neural Voice (Recommended)</span>
-                        <span className="rounded bg-emerald-100 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800">
-                          Non-Robotic &amp; Expressive
-                        </span>
-                      </div>
+                      <div className="font-bold text-slate-800">🌟 Device Built-In Neural Voice</div>
                       <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
-                        Uses your device's built-in neural voices (<strong>Ava</strong>, <strong>Samantha</strong>, <strong>Siri</strong> on iOS/Mac; <strong>Jenny</strong> on Windows; <strong>Google US</strong> on Android). Sounds natural, human, warm, and zero latency.
+                        Uses your device's built-in OS speech synthesis (<strong>Ava</strong>, <strong>Samantha</strong>, <strong>Siri</strong> on iOS/Mac; <strong>Jenny</strong> on Windows; <strong>Google US</strong> on Android).
                       </p>
                     </div>
                   </label>
@@ -1028,35 +1057,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="font-bold text-slate-800">🤖 Gemini 2.5 Studio AI Voice</div>
                       <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
                         Generates high-definition audio on-demand via Gemini API using native teacher pacing (requires your Gemini API Key entered above).
-                      </p>
-                    </div>
-                  </label>
-
-                  <label
-                    onClick={() => {
-                      setVoiceEngine('server_cached');
-                      setVoiceEnginePreference('server_cached');
-                    }}
-                    className={`flex items-start gap-2.5 rounded-xl border p-2.5 cursor-pointer transition ${
-                      voiceEngine === 'server_cached'
-                        ? 'border-indigo-500 bg-white shadow-sm ring-1 ring-indigo-500/20'
-                        : 'border-slate-200/80 bg-white/60 hover:bg-white'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="voiceEngine"
-                      checked={voiceEngine === 'server_cached'}
-                      onChange={() => {
-                        setVoiceEngine('server_cached');
-                        setVoiceEnginePreference('server_cached');
-                      }}
-                      className="mt-0.5 h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500"
-                    />
-                    <div>
-                      <div className="font-bold text-slate-800">💾 Pre-Cached Audio Clips</div>
-                      <p className="mt-0.5 text-[11px] text-slate-500 leading-relaxed">
-                        Plays pre-downloaded sound files from Firestore and local IndexedDB cache.
                       </p>
                     </div>
                   </label>

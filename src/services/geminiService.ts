@@ -80,15 +80,15 @@ export async function clearIdbAudio(): Promise<void> {
 }
 
 export type VoiceEngineMode = 'device_natural' | 'gemini_studio' | 'server_cached';
-const VOICE_ENGINE_KEY = 'spellbuddy_voice_engine_mode';
+const VOICE_ENGINE_KEY = 'spellbuddy_voice_engine_mode_v2';
 
 export function getVoiceEnginePreference(): VoiceEngineMode {
-  if (typeof window === 'undefined') return 'device_natural';
+  if (typeof window === 'undefined') return 'server_cached';
   const saved = localStorage.getItem(VOICE_ENGINE_KEY);
   if (saved === 'server_cached' || saved === 'gemini_studio' || saved === 'device_natural') {
     return saved;
   }
-  return 'device_natural';
+  return 'server_cached';
 }
 
 export function setVoiceEnginePreference(mode: VoiceEngineMode): void {
@@ -308,8 +308,8 @@ async function getOrFetchTTSBase64(
 ): Promise<string> {
   const mode = getVoiceEnginePreference();
   const useGeminiTts = mode === 'gemini_studio';
-  const effectiveKeyPrefix = useGeminiTts ? 'word_gemini_' : 'word_v3_';
-  const rawWord = cacheKey.replace(/^word(?:_v[23]|_gemini)?[-_]/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const effectiveKeyPrefix = useGeminiTts ? 'word_gemini_' : 'word_v4_ava_';
+  const rawWord = cacheKey.replace(/^word(?:_v[234](?:_ava)?|_gemini)?[-_]/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
   const normalizedWordKey = `${effectiveKeyPrefix}${rawWord}`;
 
   const cached = audioBase64Cache.get(normalizedWordKey);
@@ -340,7 +340,7 @@ async function getOrFetchTTSBase64(
       return firestoreBase64;
     }
 
-    // 3. Fetch from server TTS endpoint
+    // 3. Fetch from server TTS endpoint (which serves bundled public/tts/<word>.mp3 in <1ms)
     let base64Audio: string | null = null;
     let audioFormat = useGeminiTts ? 'audio/wav' : 'audio/mp3';
     let isFallback = false;
@@ -380,7 +380,7 @@ async function getOrFetchTTSBase64(
       saveCachedTtsToFirestore(
         normalizedWordKey,
         rawWord,
-        useGeminiTts ? geminiVoice : 'studio',
+        useGeminiTts ? geminiVoice : 'AvaNeural',
         base64Audio,
         audioFormat
       ).catch(() => {});
@@ -596,7 +596,7 @@ export async function prewarmRoundAudio(words: WordItem[], _voice?: StudioVoice,
 
   for (const w of words) {
     const cleanWord = w.word.toLowerCase().trim().replace(/[^a-z0-9_-]/g, '_');
-    const key = `word_v3_${cleanWord}`;
+    const key = `word_v4_ava_${cleanWord}`;
     if (audioBase64Cache.has(key)) continue;
 
     const idbHit = await getIdbAudio(key);
