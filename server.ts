@@ -19,7 +19,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Initialize Google GenAI
+// Initialize Google GenAI (AI Studio Applet client)
 function getGenAIClient(customKey?: string | null): GoogleGenAI | null {
   const key = customKey?.trim() || process.env.GEMINI_API_KEY || '';
   if (!key) return null;
@@ -32,6 +32,19 @@ function getGenAIClient(customKey?: string | null): GoogleGenAI | null {
     },
   });
 }
+
+// Standard Google Cloud Billing client (bypasses AI Studio prepayment proxy so billable GCP keys work directly)
+function getStandardCloudGenAIClient(customKey?: string | null): GoogleGenAI | null {
+  const key = customKey?.trim() || process.env.GEMINI_API_KEY || '';
+  if (!key) return null;
+  return new GoogleGenAI({
+    apiKey: key,
+    httpOptions: {
+      baseUrl: 'https://generativelanguage.googleapis.com',
+    },
+  });
+}
+
 const FLASH_MODEL = 'gemini-3.8-flash';
 const FALLBACK_FLASH_MODEL = 'gemini-2.5-flash';
 
@@ -63,17 +76,27 @@ function setServerTtsCache(key: string, value: { audio: string; format: string }
 
 // 0. Verify / Test user's personal Gemini API key
 app.post('/api/spelling/test-key', async (req, res) => {
-  const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.apiKey;
-  const client = getGenAIClient(customKey);
-  if (!client) {
+  const customKey =
+    (req.headers['x-gemini-api-key'] as string) || req.body?.apiKey || req.body?.customApiKey;
+  const cloudClient = getStandardCloudGenAIClient(customKey);
+  const studioClient = getGenAIClient(customKey);
+  if (!cloudClient && !studioClient) {
     return res.status(400).json({ valid: false, error: 'No API key provided or configured.' });
   }
 
   try {
-    const response = await client.models.generateContent({
-      model: FLASH_MODEL,
-      contents: 'Respond with the word OK.',
-    });
+    let response;
+    try {
+      response = await cloudClient!.models.generateContent({
+        model: FALLBACK_FLASH_MODEL,
+        contents: 'Respond with the word OK.',
+      });
+    } catch {
+      response = await studioClient!.models.generateContent({
+        model: FLASH_MODEL,
+        contents: 'Respond with the word OK.',
+      });
+    }
     if (response.text) {
       return res.json({ valid: true, message: 'API key is valid and connected to Gemini Flash!' });
     }
@@ -694,9 +717,11 @@ app.post('/api/free-neural-tts', (_req, res) => {
 app.post('/api/spelling/grade', async (req, res) => {
   const words = req.body?.words || [];
   try {
-    const customKey = (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey;
-    const client = getGenAIClient(customKey);
-    if (!client) {
+    const customKey =
+      (req.headers['x-gemini-api-key'] as string) || req.body?.customApiKey || req.body?.apiKey;
+    const cloudClient = getStandardCloudGenAIClient(customKey);
+    const studioClient = getGenAIClient(customKey);
+    if (!cloudClient && !studioClient) {
       throw new Error('Gemini API is not configured.');
     }
 
@@ -752,49 +777,76 @@ CRITICAL RULES FOR PRECISE, ACCURATE GRADING:
       },
     };
 
-    const response = await client.models.generateContent({
-      model: FLASH_MODEL,
-      contents: {
-        parts: [imagePart, { text: prompt }],
-      },
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            totalScore: { type: Type.INTEGER },
-            encouragementMessage: { type: Type.STRING },
-            results: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  wordNumber: { type: Type.INTEGER },
-                  expectedWord: { type: Type.STRING },
-                  transcribedText: { type: Type.STRING },
-                  isCorrect: { type: Type.BOOLEAN },
-                  box2d: {
-                    type: Type.ARRAY,
-                    items: { type: Type.INTEGER },
-                    description: 'Normalized [ymin, xmin, ymax, xmax] from 0 to 1000',
-                  },
-                  feedback: { type: Type.STRING },
+    const gradingConfig = {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          totalScore: { type: Type.INTEGER },
+          encouragementMessage: { type: Type.STRING },
+          results: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                wordNumber: { type: Type.INTEGER },
+                expectedWord: { type: Type.STRING },
+                transcribedText: { type: Type.STRING },
+                isCorrect: { type: Type.BOOLEAN },
+                box2d: {
+                  type: Type.ARRAY,
+                  items: { type: Type.INTEGER },
+                  description: 'Normalized [ymin, xmin, ymax, xmax] from 0 to 1000',
                 },
-                required: [
-                  'wordNumber',
-                  'expectedWord',
-                  'transcribedText',
-                  'isCorrect',
-                  'box2d',
-                  'feedback',
-                ],
+                feedback: { type: Type.STRING },
               },
+              required: [
+                'wordNumber',
+                'expectedWord',
+                'transcribedText',
+                'isCorrect',
+                'box2d',
+                'feedback',
+              ],
             },
           },
-          required: ['totalScore', 'results', 'encouragementMessage'],
         },
+        required: ['totalScore', 'results', 'encouragementMessage'],
       },
-    });
+    };
+
+    let response;
+    if (customKey?.trim()) {
+      // User supplied their own Google Cloud API key -> call gemini-2.5-flash directly on generativelanguage.googleapis.com
+      try {
+        response = await cloudClient!.models.generateContent({
+          model: FALLBACK_FLASH_MODEL,
+          contents: { parts: [imagePart, { text: prompt }] },
+          config: gradingConfig,
+        });
+      } catch {
+        response = await studioClient!.models.generateContent({
+          model: FLASH_MODEL,
+          contents: { parts: [imagePart, { text: prompt }] },
+          config: gradingConfig,
+        });
+      }
+    } else {
+      // No custom key header -> try AI Studio model first, then fall back to standard Google Cloud gemini-2.5-flash
+      try {
+        response = await studioClient!.models.generateContent({
+          model: FLASH_MODEL,
+          contents: { parts: [imagePart, { text: prompt }] },
+          config: gradingConfig,
+        });
+      } catch {
+        response = await cloudClient!.models.generateContent({
+          model: FALLBACK_FLASH_MODEL,
+          contents: { parts: [imagePart, { text: prompt }] },
+          config: gradingConfig,
+        });
+      }
+    }
 
     const jsonText = response.text?.trim() || '{}';
     const parsed = JSON.parse(jsonText);
