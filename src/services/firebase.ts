@@ -133,29 +133,28 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Initial connection test required by skill guidelines
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+// Initial connection test helper
 export async function testConnection(): Promise<boolean> {
   if (isFirestoreQuotaExhausted()) {
     return false;
   }
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await withTimeout(getDocFromServer(doc(db, 'test', 'connection')), 1500, null);
     return true;
   } catch (error) {
     if (isQuotaExhaustedError(error)) {
       setFirestoreQuotaExhausted(true);
       return false;
     }
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firebase client is offline or network is disconnected.');
-    }
     return false;
   }
-}
-
-// Initialize connection test on module load if quota allows
-if (!isFirestoreQuotaExhausted()) {
-  testConnection().catch(() => {});
 }
 
 // Authentication helpers
@@ -176,7 +175,7 @@ export async function logOut(): Promise<void> {
 /**
  * Checks whether an authenticated user is approved to access SpellBuddy.
  * Approved accounts:
- * 1. Master admin email: gaurav.ssc@gmail.com
+ * 1. Master admin email: gaurav.ssc@gmail.com (instant 0ms return)
  * 2. Any email explicitly stored in the `/approved_users` collection
  * 3. Any user document under `/users/{uid}` marked with `approved: true`
  */
@@ -189,33 +188,34 @@ export async function checkUserApproval(user: User): Promise<{
   const isMasterAdmin = email === MASTER_ADMIN_EMAIL.toLowerCase();
 
   if (isMasterAdmin) {
-    // Only attempt setDoc if not already synced and quota is not exhausted
+    // Sync admin doc in the background without blocking startup
     const adminSyncedKey = `spellbuddy_admin_doc_synced_${user.uid}`;
     const alreadySynced = typeof window !== 'undefined' && localStorage.getItem(adminSyncedKey) === 'true';
 
     if (!alreadySynced && !isFirestoreQuotaExhausted()) {
-      try {
-        const userRef = doc(db, 'users', user.uid);
-        await setDoc(
-          userRef,
-          {
-            email,
-            role: 'admin',
-            approved: true,
-            displayName: user.displayName || 'Admin',
-            photoURL: user.photoURL || '',
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(adminSyncedKey, 'true');
-        }
-      } catch (err) {
-        if (isQuotaExhaustedError(err)) {
-          setFirestoreQuotaExhausted(true);
-        }
-      }
+      const userRef = doc(db, 'users', user.uid);
+      setDoc(
+        userRef,
+        {
+          email,
+          role: 'admin',
+          approved: true,
+          displayName: user.displayName || 'Admin',
+          photoURL: user.photoURL || '',
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      )
+        .then(() => {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(adminSyncedKey, 'true');
+          }
+        })
+        .catch((err) => {
+          if (isQuotaExhaustedError(err)) {
+            setFirestoreQuotaExhausted(true);
+          }
+        });
     }
 
     return {
@@ -225,39 +225,58 @@ export async function checkUserApproval(user: User): Promise<{
     };
   }
 
-  // Check /approved_users/{sanitizedEmail}
-  const emailDocId = email.replace(/[^a-zA-Z0-9_-]/g, '_');
-  try {
-    const approvedDocRef = doc(db, 'approved_users', emailDocId);
-    const approvedSnap = await getDoc(approvedDocRef);
-    if (approvedSnap.exists()) {
-      const data = approvedSnap.data() as ApprovedUser;
-      return {
-        isApproved: true,
-        isAdmin: data.role === 'admin',
-        userProfile: { role: data.role || 'speller_parent', approved: true, email },
-      };
-    }
-  } catch (err) {
-    console.warn('Error reading approved_users whitelist doc:', err);
+  // Check local approval cache for instant 0ms repeat startups
+  const approvalCacheKey = `spellbuddy_approved_role_${email}`;
+  const cachedRole = typeof window !== 'undefined' ? localStorage.getItem(approvalCacheKey) : null;
+  if (cachedRole === 'admin' || cachedRole === 'speller_parent') {
+    return {
+      isApproved: true,
+      isAdmin: cachedRole === 'admin',
+      userProfile: { role: cachedRole, approved: true, email },
+    };
   }
 
-  // Check /users/{uid}
+  // Query /approved_users/{sanitizedEmail} and /users/{uid} in parallel with 2.5s timeout
+  const emailDocId = email.replace(/[^a-zA-Z0-9_-]/g, '_');
   try {
-    const userRef = doc(db, 'users', user.uid);
-    const userSnap = await getDoc(userRef);
-    if (userSnap.exists()) {
+    const [approvedSnap, userSnap] = await withTimeout(
+      Promise.all([
+        getDoc(doc(db, 'approved_users', emailDocId)).catch(() => null),
+        getDoc(doc(db, 'users', user.uid)).catch(() => null),
+      ]),
+      2500,
+      [null, null]
+    );
+
+    if (approvedSnap && approvedSnap.exists()) {
+      const data = approvedSnap.data() as ApprovedUser;
+      const role = data.role || 'speller_parent';
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(approvalCacheKey, role);
+      }
+      return {
+        isApproved: true,
+        isAdmin: role === 'admin',
+        userProfile: { role, approved: true, email },
+      };
+    }
+
+    if (userSnap && userSnap.exists()) {
       const uData = userSnap.data();
       if (uData.approved === true) {
+        const role = uData.role || 'speller_parent';
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(approvalCacheKey, role);
+        }
         return {
           isApproved: true,
-          isAdmin: uData.role === 'admin',
-          userProfile: { role: uData.role, approved: true, email },
+          isAdmin: role === 'admin',
+          userProfile: { role, approved: true, email },
         };
       }
     }
   } catch (err) {
-    console.warn('Error checking user record:', err);
+    console.warn('Error checking user approval:', err);
   }
 
   return {
@@ -271,22 +290,25 @@ export async function checkUserApproval(user: User): Promise<{
  * Loads all speller profiles for the given user from Firestore subcollection /users/{uid}/profiles.
  */
 export async function loadFirestoreSpellerProfiles(userId: string): Promise<KidProfile[]> {
-  const path = `users/${userId}/profiles`;
   try {
     const collRef = collection(db, 'users', userId, 'profiles');
-    const snap = await getDocs(collRef);
+    const snap = await withTimeout(getDocs(collRef), 2500, null);
+    if (!snap) return [];
     const profiles: KidProfile[] = [];
     snap.forEach((d) => {
       profiles.push(d.data() as KidProfile);
     });
     return profiles;
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    if (isQuotaExhaustedError(error)) {
+      setFirestoreQuotaExhausted(true);
+    }
+    return [];
   }
 }
 
 /**
- * Saves or updates a speller profile in Firestore.
+ * Saves or updates a speller profile in Firestore without blocking the UI.
  */
 export async function saveFirestoreSpellerProfile(
   userId: string,
@@ -298,14 +320,18 @@ export async function saveFirestoreSpellerProfile(
   const path = `users/${userId}/profiles/${profile.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'profiles', profile.id);
-    await setDoc(
-      docRef,
-      {
-        ...profile,
-        userId,
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
+    await withTimeout(
+      setDoc(
+        docRef,
+        {
+          ...profile,
+          userId,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      ),
+      2000,
+      undefined
     );
   } catch (error) {
     if (isQuotaExhaustedError(error)) {

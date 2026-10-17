@@ -427,6 +427,43 @@ export async function speakWithGeminiTTS(
     return;
   }
 
+  // 2. Fast static MP3 path for Pre-Cached Microsoft Edge Neural ('en-US-AvaNeural') in /tts/<word>.mp3
+  if (mode === 'server_cached') {
+    const rawWord = cacheKey
+      .replace(/^word(?:_v[234](?:_ava)?|_gemini)?[-_]/i, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '');
+    if (rawWord) {
+      try {
+        const audio = new Audio(`/tts/${rawWord}.mp3`);
+        audio.preload = 'auto';
+        activeHtmlAudio = audio;
+        await new Promise<void>((resolve, reject) => {
+          audio.onended = () => {
+            if (activeHtmlAudio === audio) {
+              activeHtmlAudio = null;
+            }
+            onEnded?.();
+            resolve();
+          };
+          audio.onerror = () => {
+            if (activeHtmlAudio === audio) {
+              activeHtmlAudio = null;
+            }
+            reject(new Error('Static MP3 not found'));
+          };
+          const playPromise = audio.play();
+          if (playPromise !== undefined) {
+            playPromise.catch(reject);
+          }
+        });
+        return;
+      } catch {
+        // Fall through to IndexedDB / API Base64 fallback if static file wasn't playable
+      }
+    }
+  }
+
   if (geminiTtsQuotaHit && !getCustomApiKey()) {
     playWithBrowserSpeech(_fallbackPlainText, voiceName, onEnded);
     return;
@@ -682,9 +719,6 @@ export async function generateSpellingRoundWithMeta(
       profile.masteredWords || []
     );
     const theme = getRandomSessionTheme();
-    if (getVoiceEnginePreference() !== 'device_natural') {
-      prewarmRoundAudio(curatedWords).catch(() => {});
-    }
     return {
       words: curatedWords,
       source: 'adaptive_bank',
@@ -704,9 +738,6 @@ export async function generateSpellingRoundWithMeta(
       const list: WordItem[] = Array.isArray(data) ? data : data.words;
       if (Array.isArray(list) && list.length > 0) {
         const selected = list.slice(0, 10);
-        if (getVoiceEnginePreference() !== 'device_natural') {
-          prewarmRoundAudio(selected).catch(() => {});
-        }
         return {
           words: selected,
           source: data.source === 'ai' ? 'ai' : 'adaptive_bank',
@@ -723,7 +754,6 @@ export async function generateSpellingRoundWithMeta(
     profile.struggledWords || [],
     profile.masteredWords || []
   );
-  prewarmRoundAudio(fallbackList).catch(() => {});
   return {
     words: fallbackList,
     source: 'adaptive_bank',

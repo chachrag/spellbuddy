@@ -122,7 +122,6 @@ export default function App() {
   // 1. Firebase Auth listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setAuthLoading(true);
       setAuthError(null);
       if (user) {
         setCurrentUser(user);
@@ -130,38 +129,44 @@ export default function App() {
           const approval = await checkUserApproval(user);
           setIsApproved(approval.isApproved);
           setIsAdmin(approval.isAdmin);
+          // Unblock initial screen immediately using local speller profiles
+          setAuthLoading(false);
 
           if (approval.isApproved) {
-            // Load user's speller profiles from Firestore
-            const cloudProfiles = await loadFirestoreSpellerProfiles(user.uid);
-            if (cloudProfiles && cloudProfiles.length > 0) {
-              setProfiles(cloudProfiles);
-              saveAllProfiles(cloudProfiles);
-              const active = cloudProfiles.find((p) => p.id === getActiveProfileId()) || cloudProfiles[0];
-              setProfile(active);
-              setActiveProfileId(active.id);
-            } else {
-              // Initialize first profile in Firestore for this user
-              const initialWithUser: KidProfile = {
-                ...profile,
-                userId: user.uid,
-                masteredWords: profile.masteredWords || [],
-              };
-              await saveFirestoreSpellerProfile(user.uid, initialWithUser);
-              setProfiles([initialWithUser]);
-              setProfile(initialWithUser);
-            }
+            // Sync speller profiles from Firestore in the background without blocking UI
+            loadFirestoreSpellerProfiles(user.uid)
+              .then((cloudProfiles) => {
+                if (cloudProfiles && cloudProfiles.length > 0) {
+                  setProfiles(cloudProfiles);
+                  saveAllProfiles(cloudProfiles);
+                  const active =
+                    cloudProfiles.find((p) => p.id === getActiveProfileId()) || cloudProfiles[0];
+                  setProfile(active);
+                  setActiveProfileId(active.id);
+                } else {
+                  const initialWithUser: KidProfile = {
+                    ...profile,
+                    userId: user.uid,
+                    masteredWords: profile.masteredWords || [],
+                  };
+                  setProfiles([initialWithUser]);
+                  setProfile(initialWithUser);
+                  saveFirestoreSpellerProfile(user.uid, initialWithUser).catch(() => {});
+                }
+              })
+              .catch(() => {});
           }
         } catch (err) {
           console.error('Error verifying user approval:', err);
           setAuthError('Error validating account permissions.');
+          setAuthLoading(false);
         }
       } else {
         setCurrentUser(null);
         setIsApproved(false);
         setIsAdmin(false);
+        setAuthLoading(false);
       }
-      setAuthLoading(false);
     });
 
     return () => unsubscribe();
