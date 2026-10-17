@@ -1,0 +1,107 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default deny all unmapped access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Security Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email.lower() == 'gaurav.ssc@gmail.com'
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    // Entity Validation Helpers
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['email', 'role', 'approved']) &&
+        data.keys().hasOnly(['email', 'role', 'approved', 'displayName', 'photoURL', 'createdAt', 'updatedAt']) &&
+        data.email is string && data.email.size() <= 128 &&
+        data.role in ['admin', 'speller_parent'] &&
+        data.approved is bool;
+    }
+
+    function isValidSpellerProfile(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'name', 'age', 'difficultyLevel']) &&
+        data.id is string && data.id.size() <= 64 &&
+        data.userId == userId &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
+        data.age is number && data.age >= 4 && data.age <= 16 &&
+        data.difficultyLevel is number && data.difficultyLevel >= 1 && data.difficultyLevel <= 5 &&
+        (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 300)) &&
+        (!('masteredWords' in data) || (data.masteredWords is list && data.masteredWords.size() <= 1000));
+    }
+
+    function isValidWordHistory(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'spellerId', 'word', 'status', 'timestamp']) &&
+        data.id is string && data.id.size() <= 64 &&
+        data.userId == userId &&
+        data.spellerId is string && data.spellerId.size() <= 64 &&
+        data.word is string && data.word.size() > 0 && data.word.size() <= 50 &&
+        data.status in ['correct', 'wrong'] &&
+        data.timestamp is string && data.timestamp.size() <= 50;
+    }
+
+    function isValidApprovedUser(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+        data.email is string && data.email.size() <= 128 &&
+        data.role in ['admin', 'speller_parent'];
+    }
+
+    // 1. User Account Documents
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && isValidUserProfile(request.resource.data) && (
+        // Prevent privilege self-escalation: only designated admin can create an admin profile
+        (request.resource.data.role == 'admin' && isAdmin()) ||
+        request.resource.data.role == 'speller_parent'
+      );
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data) && (
+        // Role cannot be modified by user unless admin
+        request.resource.data.role == resource.data.role || isAdmin()
+      );
+      allow delete: if isAdmin();
+
+      // 2. Speller Profiles Subcollection
+      match /profiles/{profileId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidSpellerProfile(request.resource.data, userId);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      // 3. Word History Subcollection (Immutable Logs)
+      match /word_history/{historyId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidWordHistory(request.resource.data, userId);
+        allow update: if false; // Word history records are strictly append-only
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // 4. Approved Whitelist Entries
+    match /approved_users/{emailId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "SpellBuddy AI - Adaptive Spelling & OCR Grader",
+  "description": "An adaptive spelling learning app for 8-year-olds with phonetic audio cues, instant spelling reveal, AI vision handwriting OCR grading with annotated checkmarks, and a phoneme mastery dashboard.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

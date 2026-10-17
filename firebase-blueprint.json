@@ -1,0 +1,212 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered and authorized user account details",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "User Google email address",
+          "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "description": "User permission role",
+          "enum": ["admin", "speller_parent"]
+        },
+        "approved": {
+          "type": "boolean",
+          "description": "Whether user is approved to access the applet"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name from Google auth",
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User avatar image URL",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp in ISO format"
+        }
+      },
+      "required": ["email", "role", "approved"]
+    },
+    "SpellerProfile": {
+      "title": "SpellerProfile",
+      "description": "Child speller profile associated with a parent user account",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique speller profile ID",
+          "maxLength": 64
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the owning parent account",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "Child's speller nickname or first name",
+          "maxLength": 50
+        },
+        "age": {
+          "type": "number",
+          "description": "Child age in years (4-14)"
+        },
+        "avatarEmoji": {
+          "type": "string",
+          "description": "Avatar emoji character for speller",
+          "maxLength": 10
+        },
+        "difficultyLevel": {
+          "type": "number",
+          "description": "Spelling difficulty level from 1 to 5"
+        },
+        "roundsCompleted": {
+          "type": "number",
+          "description": "Total number of spelling rounds completed"
+        },
+        "struggledWords": {
+          "type": "array",
+          "description": "List of words the child struggled with (repeated until mastered)"
+        },
+        "masteredWords": {
+          "type": "array",
+          "description": "List of words the child spelled correctly (never asked again)"
+        },
+        "recentScores": {
+          "type": "array",
+          "description": "Recent 5 round scores (0-10)"
+        },
+        "levelRoundsCount": {
+          "type": "number",
+          "description": "Rounds completed at current level"
+        },
+        "consecutiveHighScores": {
+          "type": "number",
+          "description": "Consecutive rounds scored >= 9 at current level"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp of last profile update"
+        }
+      },
+      "required": ["id", "userId", "name", "age", "difficultyLevel"]
+    },
+    "WordHistoryRecord": {
+      "title": "WordHistoryRecord",
+      "description": "Individual word result record for auditing, analytics, and CSV export",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique record identifier",
+          "maxLength": 64
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owning user UID",
+          "maxLength": 128
+        },
+        "spellerId": {
+          "type": "string",
+          "description": "Target speller profile ID",
+          "maxLength": 64
+        },
+        "spellerName": {
+          "type": "string",
+          "description": "Target speller display name",
+          "maxLength": 50
+        },
+        "word": {
+          "type": "string",
+          "description": "Expected target spelling word",
+          "maxLength": 50
+        },
+        "status": {
+          "type": "string",
+          "description": "Whether the word was spelled correctly or incorrectly",
+          "enum": ["correct", "wrong"]
+        },
+        "level": {
+          "type": "number",
+          "description": "Difficulty level of the word (1-5)"
+        },
+        "childAttempt": {
+          "type": "string",
+          "description": "What the child actually wrote or transcribed",
+          "maxLength": 100
+        },
+        "wasRevealed": {
+          "type": "boolean",
+          "description": "Whether the child revealed the word spelling during the round"
+        },
+        "phonemes": {
+          "type": "array",
+          "description": "Phonemic patterns associated with the word"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO timestamp of the attempt"
+        }
+      },
+      "required": ["id", "userId", "spellerId", "word", "status", "timestamp"]
+    },
+    "ApprovedUser": {
+      "title": "ApprovedUser",
+      "description": "Approved whitelist entry permitting Google user email to access the app",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Authorized Google email address",
+          "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "description": "Role granted to the approved email",
+          "enum": ["admin", "speller_parent"]
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Email or UID of admin who approved this user",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp when authorization was granted"
+        }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "Parent user document storing account state and access privileges"
+    },
+    "/users/{userId}/profiles/{profileId}": {
+      "schema": { "$ref": "SpellerProfile" },
+      "description": "Child speller profile associated with a specific account"
+    },
+    "/users/{userId}/word_history/{historyId}": {
+      "schema": { "$ref": "WordHistoryRecord" },
+      "description": "Word attempt log for reporting, progress tracking, and CSV exports"
+    },
+    "/approved_users/{emailId}": {
+      "schema": { "$ref": "ApprovedUser" },
+      "description": "Allowlist entries of approved email accounts managed by administrators"
+    }
+  }
+}
