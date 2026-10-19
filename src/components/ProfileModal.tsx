@@ -30,6 +30,7 @@ import {
 import {
   shareSpellerProfileWithEmail,
   unshareSpellerProfileWithEmail,
+  saveFirestoreSpellerProfile,
 } from '../services/firebase';
 
 interface ProfileModalProps {
@@ -70,6 +71,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [editLevel, setEditLevel] = useState(activeProfile.difficultyLevel || 2);
   const [editError, setEditError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
 
   // Sharing state
   const [sharingProfileId, setSharingProfileId] = useState<string>(
@@ -213,38 +215,56 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     onClose();
   };
 
-  const handleUpdate = (e: React.FormEvent) => {
+  const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editName.trim()) {
       setEditError('Please enter a name for the speller.');
       return;
     }
     setEditError(null);
+    setSaveLoading(true);
 
-    const existing = profiles.find((p) => p.id === editingProfileId);
-    const updated = updateProfile(editingProfileId, {
-      name: editName,
-      age: editAge,
-      difficultyLevel: editLevel,
-      avatarEmoji: editAvatar,
-    });
-    const enriched: KidProfile = {
-      ...updated,
-      ownerId: existing?.ownerId || updated.ownerId,
-      ownerEmail: existing?.ownerEmail || updated.ownerEmail,
-      collaboratorEmails: existing?.collaboratorEmails || updated.collaboratorEmails,
-      sharedWithEmails: existing?.sharedWithEmails || updated.sharedWithEmails,
-    };
+    try {
+      const existing = profiles.find((p) => p.id === editingProfileId);
+      const userEmail = currentUser?.email?.toLowerCase().trim();
+      const updated = updateProfile(editingProfileId, {
+        name: editName,
+        age: editAge,
+        difficultyLevel: editLevel,
+        avatarEmoji: editAvatar,
+      });
+      const enriched: KidProfile = {
+        ...updated,
+        ownerId: existing?.ownerId || updated.ownerId || currentUser?.uid,
+        ownerEmail: existing?.ownerEmail || updated.ownerEmail || userEmail,
+        collaboratorEmails: existing?.collaboratorEmails?.length
+          ? existing.collaboratorEmails
+          : updated.collaboratorEmails,
+        sharedWithEmails: existing?.sharedWithEmails || updated.sharedWithEmails || [],
+        updatedAt: new Date().toISOString(),
+        updatedByEmail: userEmail || undefined,
+      };
 
-    const updatedList = profiles.map((p) => (p.id === editingProfileId ? enriched : p));
-    const nextActive = activeProfile.id === editingProfileId ? enriched : activeProfile;
+      const updatedList = profiles.map((p) => (p.id === editingProfileId ? enriched : p));
+      const nextActive = activeProfile.id === editingProfileId ? enriched : activeProfile;
 
-    onProfileChanged(nextActive, updatedList);
-    setSaveSuccess(true);
-    setTimeout(() => {
-      setSaveSuccess(false);
-      setTab('switch');
-    }, 1200);
+      // Persist directly to Firestore so all shared accounts receive the update in real time
+      if (currentUser && enriched.id !== 'profile-default') {
+        await saveFirestoreSpellerProfile(currentUser, enriched, true);
+      }
+
+      onProfileChanged(nextActive, updatedList);
+      setSaveSuccess(true);
+      setTimeout(() => {
+        setSaveSuccess(false);
+        setTab('switch');
+      }, 1000);
+    } catch (err: unknown) {
+      console.error('Error saving profile changes to Firestore:', err);
+      setEditError(err instanceof Error ? err.message : 'Failed to save changes to cloud database.');
+    } finally {
+      setSaveLoading(false);
+    }
   };
 
   const handleReset = (profileId: string) => {
@@ -742,10 +762,20 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-sky-500 py-3 text-sm font-bold text-white shadow-md transition hover:bg-sky-600"
+                disabled={saveLoading}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-sky-500 py-3 text-sm font-bold text-white shadow-md transition hover:bg-sky-600 disabled:bg-slate-300 disabled:cursor-not-allowed"
               >
-                <Save className="h-4 w-4" />
-                Save Changes
+                {saveLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-4 w-4" />
+                    <span>Save Changes</span>
+                  </>
+                )}
               </button>
             </div>
           </form>

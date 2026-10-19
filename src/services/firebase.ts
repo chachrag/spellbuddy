@@ -403,11 +403,9 @@ export async function saveFirestoreSpellerProfile(
   profile: KidProfile,
   throwOnError: boolean = false
 ): Promise<void> {
-  if (isFirestoreQuotaExhausted()) {
-    return;
-  }
   const currentUid = auth.currentUser?.uid;
-  const currentEmail = auth.currentUser?.email?.toLowerCase().trim() || '';
+  const rawEmail = auth.currentUser?.email?.trim() || '';
+  const currentEmail = rawEmail.toLowerCase();
 
   const userId = typeof userOrId === 'string' ? userOrId : userOrId.uid || currentUid || '';
   const userEmail = (
@@ -416,17 +414,25 @@ export async function saveFirestoreSpellerProfile(
     .toLowerCase()
     .trim();
 
+  // If the profile already has an ownerId and ownerEmail, preserve them!
   const ownerId = profile.ownerId || currentUid || userId || 'user';
   const ownerEmail = (profile.ownerEmail || currentEmail || userEmail).toLowerCase().trim();
+
+  const cleanShared = (profile.sharedWithEmails || [])
+    .map((e) => String(e).trim())
+    .filter((e) => e && e.toLowerCase() !== ownerEmail);
+
+  // Store both lowercase and raw strings so rules and queries match reliably
   const sharedWithEmails = Array.from(
-    new Set(
-      (profile.sharedWithEmails || [])
-        .map((e) => String(e).toLowerCase().trim())
-        .filter((e) => e && e !== ownerEmail)
-    )
+    new Set(cleanShared.flatMap((e) => [e.toLowerCase(), e]))
   );
   const collaboratorEmails = Array.from(
-    new Set([ownerEmail, ...sharedWithEmails].filter(Boolean))
+    new Set([
+      ownerEmail,
+      rawEmail,
+      currentEmail,
+      ...sharedWithEmails,
+    ].filter(Boolean))
   );
 
   const enrichedProfile: KidProfile = {
@@ -441,15 +447,18 @@ export async function saveFirestoreSpellerProfile(
   };
 
   try {
-    // 1. Save to /shared_profiles/{profile.id}
+    // 1. Save to primary shared_profiles collection
     const sharedRef = doc(db, 'shared_profiles', profile.id);
     await withTimeout(setDoc(sharedRef, enrichedProfile, { merge: true }), 8000, undefined);
 
-    // 2. Also save to /users/{userId}/profiles/{profile.id} if current user is owner of that user space
-    if (userId && (currentUid === userId || currentEmail === MASTER_ADMIN_EMAIL.toLowerCase())) {
-      const userProfileRef = doc(db, 'users', userId, 'profiles', profile.id);
+    // Clear quota exhausted flag if write succeeded
+    setFirestoreQuotaExhausted(false);
+
+    // 2. Also save to /users/{ownerId}/profiles/{profile.id} ONLY if current user is owner of that account
+    if (ownerId && (currentUid === ownerId || currentEmail === MASTER_ADMIN_EMAIL.toLowerCase())) {
+      const userProfileRef = doc(db, 'users', ownerId, 'profiles', profile.id);
       await withTimeout(
-        setDoc(userProfileRef, { ...enrichedProfile, userId }, { merge: true }),
+        setDoc(userProfileRef, { ...enrichedProfile, userId: ownerId }, { merge: true }),
         5000,
         undefined
       ).catch((legacyErr) => {

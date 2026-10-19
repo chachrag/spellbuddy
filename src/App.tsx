@@ -127,6 +127,7 @@ export default function App() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const isRemoteUpdateRef = useRef(false);
 
   // 1. Firebase Auth listener
   useEffect(() => {
@@ -189,6 +190,12 @@ export default function App() {
     });
     setActiveProfileId(profile.id);
 
+    // If this change was triggered by a remote cloud listener update, do not re-upload back to Firestore
+    if (isRemoteUpdateRef.current) {
+      isRemoteUpdateRef.current = false;
+      return;
+    }
+
     // Only save real/customized profiles to Firestore, avoid auto-writing default empty placeholder
     if (currentUser?.uid && isApproved && profile.id !== 'profile-default') {
       saveFirestoreSpellerProfile(currentUser, profile).catch((err) => {
@@ -226,12 +233,24 @@ export default function App() {
         // If current profile is updated in sharedProfiles, take the latest
         const matched = sharedProfiles.find((p) => p.id === prev.id);
         if (matched) {
-          return matched;
+          if (
+            prev.difficultyLevel !== matched.difficultyLevel ||
+            prev.name !== matched.name ||
+            prev.avatarEmoji !== matched.avatarEmoji ||
+            prev.age !== matched.age ||
+            prev.roundsCompleted !== matched.roundsCompleted ||
+            prev.updatedAt !== matched.updatedAt
+          ) {
+            isRemoteUpdateRef.current = true;
+            return { ...prev, ...matched };
+          }
+          return prev;
         }
         // If current profile is the default placeholder, immediately switch to the shared profile!
         if (prev.id === 'profile-default' && sharedProfiles.length > 0) {
           const firstReal = sharedProfiles[0];
           setActiveProfileId(firstReal.id);
+          isRemoteUpdateRef.current = true;
           return firstReal;
         }
         return prev;
@@ -245,15 +264,24 @@ export default function App() {
   useEffect(() => {
     if (!profile.id || !currentUser || profile.id === 'profile-default') return;
     const unsubscribe = subscribeToSpellerProfile(profile.id, (cloudUpdated) => {
-      if (
-        cloudUpdated &&
-        cloudUpdated.updatedAt &&
-        cloudUpdated.updatedAt !== profile.updatedAt
-      ) {
-        setProfile((prev) => ({
-          ...prev,
-          ...cloudUpdated,
-        }));
+      if (cloudUpdated && cloudUpdated.id === profile.id) {
+        setProfile((prev) => {
+          if (
+            prev.difficultyLevel !== cloudUpdated.difficultyLevel ||
+            prev.name !== cloudUpdated.name ||
+            prev.avatarEmoji !== cloudUpdated.avatarEmoji ||
+            prev.age !== cloudUpdated.age ||
+            prev.roundsCompleted !== cloudUpdated.roundsCompleted ||
+            prev.updatedAt !== cloudUpdated.updatedAt
+          ) {
+            isRemoteUpdateRef.current = true;
+            return {
+              ...prev,
+              ...cloudUpdated,
+            };
+          }
+          return prev;
+        });
         setProfiles((prev) =>
           prev.map((p) => (p.id === cloudUpdated.id ? { ...p, ...cloudUpdated } : p))
         );

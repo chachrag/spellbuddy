@@ -24,7 +24,7 @@ service cloud.firestore {
     function isAdmin() {
       return isSignedIn() && (
         request.auth.token.email == 'gaurav.ssc@gmail.com' ||
-        (request.auth.token.email is string && request.auth.token.email.lower() == 'gaurav.ssc@gmail.com')
+        (request.auth.token.email is string && request.auth.token.email.matches('(?i)^gaurav\\.ssc@gmail\\.com$'))
       );
     }
 
@@ -155,11 +155,9 @@ service cloud.firestore {
         isAdmin() ||
         ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid) ||
         (request.auth.token.email != null && (
-          ('ownerEmail' in resource.data && resource.data.ownerEmail == request.auth.token.email.lower()) ||
-          ('collaboratorEmails' in resource.data && (
-            request.auth.token.email.lower() in resource.data.collaboratorEmails ||
-            request.auth.token.email in resource.data.collaboratorEmails
-          ))
+          ('ownerEmail' in resource.data && resource.data.ownerEmail == request.auth.token.email) ||
+          ('collaboratorEmails' in resource.data && request.auth.token.email in resource.data.collaboratorEmails) ||
+          ('sharedWithEmails' in resource.data && request.auth.token.email in resource.data.sharedWithEmails)
         ))
       );
       allow list: if isSignedIn();
@@ -167,11 +165,9 @@ service cloud.firestore {
         isAdmin() ||
         ('ownerId' in request.resource.data && request.resource.data.ownerId == request.auth.uid) ||
         (request.auth.token.email != null && (
-          ('ownerEmail' in request.resource.data && request.resource.data.ownerEmail == request.auth.token.email.lower()) ||
-          ('collaboratorEmails' in request.resource.data && (
-            request.auth.token.email.lower() in request.resource.data.collaboratorEmails ||
-            request.auth.token.email in request.resource.data.collaboratorEmails
-          ))
+          ('ownerEmail' in request.resource.data && request.resource.data.ownerEmail == request.auth.token.email) ||
+          ('collaboratorEmails' in request.resource.data && request.auth.token.email in request.resource.data.collaboratorEmails) ||
+          ('sharedWithEmails' in request.resource.data && request.auth.token.email in request.resource.data.sharedWithEmails)
         ))
       );
       allow update: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
@@ -179,15 +175,11 @@ service cloud.firestore {
         ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid) ||
         ('ownerId' in request.resource.data && request.resource.data.ownerId == request.auth.uid) ||
         (request.auth.token.email != null && (
-          ('ownerEmail' in resource.data && resource.data.ownerEmail == request.auth.token.email.lower()) ||
-          ('collaboratorEmails' in resource.data && (
-            request.auth.token.email.lower() in resource.data.collaboratorEmails ||
-            request.auth.token.email in resource.data.collaboratorEmails
-          )) ||
-          ('collaboratorEmails' in request.resource.data && (
-            request.auth.token.email.lower() in request.resource.data.collaboratorEmails ||
-            request.auth.token.email in request.resource.data.collaboratorEmails
-          ))
+          ('ownerEmail' in resource.data && resource.data.ownerEmail == request.auth.token.email) ||
+          ('collaboratorEmails' in resource.data && request.auth.token.email in resource.data.collaboratorEmails) ||
+          ('collaboratorEmails' in request.resource.data && request.auth.token.email in request.resource.data.collaboratorEmails) ||
+          ('sharedWithEmails' in resource.data && request.auth.token.email in resource.data.sharedWithEmails) ||
+          ('sharedWithEmails' in request.resource.data && request.auth.token.email in request.resource.data.sharedWithEmails)
         ))
       );
       allow delete: if isSignedIn() && (
