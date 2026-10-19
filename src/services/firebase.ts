@@ -406,12 +406,18 @@ export async function saveFirestoreSpellerProfile(
   if (isFirestoreQuotaExhausted()) {
     return;
   }
-  const userId = typeof userOrId === 'string' ? userOrId : userOrId.uid;
-  const userEmail =
-    typeof userOrId === 'object' && userOrId.email ? userOrId.email.toLowerCase().trim() : '';
+  const currentUid = auth.currentUser?.uid;
+  const currentEmail = auth.currentUser?.email?.toLowerCase().trim() || '';
 
-  const ownerId = profile.ownerId || userId;
-  const ownerEmail = (profile.ownerEmail || userEmail || '').toLowerCase().trim();
+  const userId = typeof userOrId === 'string' ? userOrId : userOrId.uid || currentUid || '';
+  const userEmail = (
+    typeof userOrId === 'object' && userOrId.email ? userOrId.email : currentEmail
+  )
+    .toLowerCase()
+    .trim();
+
+  const ownerId = profile.ownerId || currentUid || userId || 'user';
+  const ownerEmail = (profile.ownerEmail || currentEmail || userEmail).toLowerCase().trim();
   const sharedWithEmails = Array.from(
     new Set(
       (profile.sharedWithEmails || [])
@@ -439,10 +445,16 @@ export async function saveFirestoreSpellerProfile(
     const sharedRef = doc(db, 'shared_profiles', profile.id);
     await withTimeout(setDoc(sharedRef, enrichedProfile, { merge: true }), 8000, undefined);
 
-    // 2. Also save to legacy /users/{userId}/profiles/{profile.id}
-    if (userId) {
+    // 2. Also save to /users/{userId}/profiles/{profile.id} if current user is owner of that user space
+    if (userId && (currentUid === userId || currentEmail === MASTER_ADMIN_EMAIL.toLowerCase())) {
       const userProfileRef = doc(db, 'users', userId, 'profiles', profile.id);
-      await withTimeout(setDoc(userProfileRef, enrichedProfile, { merge: true }), 5000, undefined);
+      await withTimeout(
+        setDoc(userProfileRef, { ...enrichedProfile, userId }, { merge: true }),
+        5000,
+        undefined
+      ).catch((legacyErr) => {
+        console.warn('Non-fatal legacy profile sync notice:', legacyErr);
+      });
     }
   } catch (error) {
     if (isQuotaExhaustedError(error)) {

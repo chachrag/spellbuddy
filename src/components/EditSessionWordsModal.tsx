@@ -100,8 +100,6 @@ export const EditSessionWordsModal: React.FC<EditSessionWordsModalProps> = ({
     };
   }, [activeDropdownIndex]);
 
-  if (!isOpen) return null;
-
   const showToast = (msg: string) => {
     setToastNote(msg);
     setTimeout(() => setToastNote(null), 3000);
@@ -225,6 +223,8 @@ export const EditSessionWordsModal: React.FC<EditSessionWordsModalProps> = ({
     });
     return map;
   }, [editedWords]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-6 backdrop-blur-sm overflow-y-auto">

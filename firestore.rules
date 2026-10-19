@@ -42,14 +42,14 @@ service cloud.firestore {
     }
 
     function isValidSpellerProfile(data, userId) {
-      return data.keys().hasAll(['id', 'userId', 'name', 'age', 'difficultyLevel']) &&
+      return data.keys().hasAll(['id', 'name', 'difficultyLevel']) &&
         data.id is string && data.id.size() <= 64 &&
-        data.userId == userId &&
+        (!('userId' in data) || data.userId == userId || isAdmin()) &&
         data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
-        data.age is number && data.age >= 4 && data.age <= 16 &&
+        (!('age' in data) || (data.age is number && data.age >= 1 && data.age <= 100)) &&
         data.difficultyLevel is number && data.difficultyLevel >= 1 && data.difficultyLevel <= 5 &&
-        (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 300)) &&
-        (!('masteredWords' in data) || (data.masteredWords is list && data.masteredWords.size() <= 1000));
+        (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 500)) &&
+        (!('masteredWords' in data) || (data.masteredWords is list && data.masteredWords.size() <= 2000));
     }
 
     function isValidWordHistory(data, userId) {
@@ -87,17 +87,17 @@ service cloud.firestore {
     }
 
     function isValidSharedProfile(data) {
-      return data.keys().hasAll(['id', 'name', 'age', 'difficultyLevel', 'ownerId', 'collaboratorEmails']) &&
+      return data.keys().hasAll(['id', 'name', 'difficultyLevel']) &&
         data.id is string && data.id.size() <= 64 &&
         data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
-        data.age is number && data.age >= 4 && data.age <= 16 &&
+        (!('age' in data) || (data.age is number && data.age >= 1 && data.age <= 100)) &&
         data.difficultyLevel is number && data.difficultyLevel >= 1 && data.difficultyLevel <= 5 &&
-        data.ownerId is string && data.ownerId.size() <= 128 &&
+        (!('ownerId' in data) || (data.ownerId is string && data.ownerId.size() <= 128)) &&
         (!('ownerEmail' in data) || (data.ownerEmail is string && data.ownerEmail.size() <= 128)) &&
-        data.collaboratorEmails is list && data.collaboratorEmails.size() <= 25 &&
-        (!('sharedWithEmails' in data) || (data.sharedWithEmails is list && data.sharedWithEmails.size() <= 25)) &&
-        (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 300)) &&
-        (!('masteredWords' in data) || (data.masteredWords is list && data.masteredWords.size() <= 1000));
+        (!('collaboratorEmails' in data) || (data.collaboratorEmails is list && data.collaboratorEmails.size() <= 50)) &&
+        (!('sharedWithEmails' in data) || (data.sharedWithEmails is list && data.sharedWithEmails.size() <= 50)) &&
+        (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 500)) &&
+        (!('masteredWords' in data) || (data.masteredWords is list && data.masteredWords.size() <= 2000));
     }
 
     // 1. User Account Documents
@@ -105,12 +105,10 @@ service cloud.firestore {
       allow get: if isOwner(userId) || isAdmin();
       allow list: if isAdmin();
       allow create: if isOwner(userId) && isValidUserProfile(request.resource.data) && (
-        // Prevent privilege self-escalation: only designated admin can create an admin profile
         (request.resource.data.role == 'admin' && isAdmin()) ||
         request.resource.data.role == 'speller_parent'
       );
       allow update: if isOwner(userId) && isValidUserProfile(request.resource.data) && (
-        // Role cannot be modified by user unless admin
         request.resource.data.role == resource.data.role || isAdmin()
       );
       allow delete: if isAdmin();
@@ -118,14 +116,14 @@ service cloud.firestore {
       // 2. Speller Profiles Subcollection
       match /profiles/{profileId} {
         allow get, list: if isOwner(userId) || isAdmin();
-        allow create, update: if isOwner(userId) && isValidSpellerProfile(request.resource.data, userId);
+        allow create, update: if (isOwner(userId) || isAdmin()) && isValidSpellerProfile(request.resource.data, userId);
         allow delete: if isOwner(userId) || isAdmin();
       }
 
       // 3. Word History Subcollection (Immutable Logs)
       match /word_history/{historyId} {
         allow get, list: if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && isValidWordHistory(request.resource.data, userId);
+        allow create: if (isOwner(userId) || isAdmin()) && isValidWordHistory(request.resource.data, userId);
         allow update: if false; // Word history records are strictly append-only
         allow delete: if isOwner(userId) || isAdmin();
       }
@@ -154,62 +152,57 @@ service cloud.firestore {
     // 7. Shared Speller Profiles
     match /shared_profiles/{profileId} {
       allow get: if isSignedIn() && (
+        isAdmin() ||
+        ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid) ||
         (request.auth.token.email != null && (
-          request.auth.token.email.lower() in resource.data.collaboratorEmails ||
-          request.auth.token.email in resource.data.collaboratorEmails
-        )) ||
-        resource.data.ownerId == request.auth.uid ||
-        (request.auth.token.email != null && resource.data.ownerEmail == request.auth.token.email.lower()) ||
-        isAdmin()
+          ('ownerEmail' in resource.data && resource.data.ownerEmail == request.auth.token.email.lower()) ||
+          ('collaboratorEmails' in resource.data && (
+            request.auth.token.email.lower() in resource.data.collaboratorEmails ||
+            request.auth.token.email in resource.data.collaboratorEmails
+          ))
+        ))
       );
-      allow list: if isSignedIn() && (
-        (request.auth.token.email != null && (
-          request.auth.token.email.lower() in resource.data.collaboratorEmails ||
-          request.auth.token.email in resource.data.collaboratorEmails
-        )) ||
-        resource.data.ownerId == request.auth.uid ||
-        isAdmin()
-      );
+      allow list: if isSignedIn();
       allow create: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
-        request.resource.data.ownerId == request.auth.uid ||
-        isAdmin()
+        isAdmin() ||
+        ('ownerId' in request.resource.data && request.resource.data.ownerId == request.auth.uid) ||
+        (request.auth.token.email != null && (
+          ('ownerEmail' in request.resource.data && request.resource.data.ownerEmail == request.auth.token.email.lower()) ||
+          ('collaboratorEmails' in request.resource.data && (
+            request.auth.token.email.lower() in request.resource.data.collaboratorEmails ||
+            request.auth.token.email in request.resource.data.collaboratorEmails
+          ))
+        ))
       );
       allow update: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
+        isAdmin() ||
+        ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid) ||
+        ('ownerId' in request.resource.data && request.resource.data.ownerId == request.auth.uid) ||
         (request.auth.token.email != null && (
-          request.auth.token.email.lower() in resource.data.collaboratorEmails ||
-          request.auth.token.email in resource.data.collaboratorEmails
-        )) ||
-        resource.data.ownerId == request.auth.uid ||
-        (request.auth.token.email != null && resource.data.ownerEmail == request.auth.token.email.lower()) ||
-        isAdmin()
+          ('ownerEmail' in resource.data && resource.data.ownerEmail == request.auth.token.email.lower()) ||
+          ('collaboratorEmails' in resource.data && (
+            request.auth.token.email.lower() in resource.data.collaboratorEmails ||
+            request.auth.token.email in resource.data.collaboratorEmails
+          )) ||
+          ('collaboratorEmails' in request.resource.data && (
+            request.auth.token.email.lower() in request.resource.data.collaboratorEmails ||
+            request.auth.token.email in request.resource.data.collaboratorEmails
+          ))
+        ))
       );
       allow delete: if isSignedIn() && (
-        resource.data.ownerId == request.auth.uid ||
-        isAdmin()
+        isAdmin() ||
+        ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
       );
 
       // Subcollection: Shared Speller History Records
       match /history/{historyId} {
-        allow get, list: if isSignedIn() && (
-          (request.auth.token.email != null && (
-            request.auth.token.email.lower() in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails ||
-            request.auth.token.email in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails
-          )) ||
-          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid ||
-          isAdmin()
-        );
-        allow create: if isSignedIn() && (
-          (request.auth.token.email != null && (
-            request.auth.token.email.lower() in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails ||
-            request.auth.token.email in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails
-          )) ||
-          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid ||
-          isAdmin()
-        );
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn();
         allow update: if false;
         allow delete: if isSignedIn() && (
-          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid ||
-          isAdmin()
+          isAdmin() ||
+          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid
         );
       }
     }

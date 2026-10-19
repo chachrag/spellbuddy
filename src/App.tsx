@@ -617,8 +617,8 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         };
 
-        if (currentUser?.uid) {
-          saveFirestoreSpellerProfile(currentUser.uid, updatedProfileState).catch(() => {});
+        if (currentUser) {
+          saveFirestoreSpellerProfile(currentUser, updatedProfileState).catch(() => {});
         }
 
         return updatedProfileState;
@@ -683,8 +683,8 @@ export default function App() {
         recentScores: [...prev.recentScores.slice(0, -1), newScore],
       };
 
-      if (currentUser?.uid) {
-        saveFirestoreSpellerProfile(currentUser.uid, updatedProfileState).catch(() => {});
+      if (currentUser) {
+        saveFirestoreSpellerProfile(currentUser, updatedProfileState).catch(() => {});
       }
 
       return updatedProfileState;
@@ -725,8 +725,8 @@ export default function App() {
   const handleResetProfile = () => {
     const updated = resetProfileProgress(profile.id);
     setProfile(updated);
-    if (currentUser?.uid) {
-      saveFirestoreSpellerProfile(currentUser.uid, updated).catch(() => {});
+    if (currentUser) {
+      saveFirestoreSpellerProfile(currentUser, updated).catch(() => {});
     }
   };
 
@@ -1119,58 +1119,12 @@ export default function App() {
                 onClick={() => setShowEditWordsModal(true)}
                 disabled={loadingWords}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-indigo-300 bg-indigo-50/90 px-6 py-4 text-base font-bold text-indigo-900 shadow transition hover:bg-indigo-100 hover:border-indigo-400 hover:scale-105 active:scale-95 disabled:opacity-60"
-                title="Manually search and choose words from the library for this session"
+                title="View and choose words from the library for this session"
               >
-                <SlidersHorizontal className="h-5 w-5 text-indigo-700" />
-                Customize Words
+                <Edit3 className="h-5 w-5 text-indigo-700" />
+                Edit Words
               </button>
             </div>
-
-            {/* Session Words Preview List */}
-            {words.length > 0 && (
-              <div className="mt-8 rounded-2xl border-2 border-slate-100 bg-slate-50/60 p-4 sm:p-5 text-left">
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                      Session Words ({words.length})
-                    </span>
-                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800">
-                      Library Curated
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowEditWordsModal(true)}
-                    className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition"
-                  >
-                    <Edit3 className="h-3.5 w-3.5" />
-                    <span>Edit Words</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                  {words.slice(0, 10).map((wordItem, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setShowEditWordsModal(true)}
-                      className="group flex items-center justify-between gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 py-2 hover:border-sky-300 hover:bg-sky-50/50 hover:shadow-xs transition text-left"
-                      title={`Word #${idx + 1}: ${wordItem.word}. Click to customize.`}
-                    >
-                      <div className="min-w-0 flex items-center gap-1.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-black text-slate-600 group-hover:bg-sky-500 group-hover:text-white transition">
-                          {idx + 1}
-                        </span>
-                        <span className="truncate text-xs font-bold text-slate-800 capitalize">
-                          {wordItem.word}
-                        </span>
-                      </div>
-                      <Edit3 className="h-3 w-3 text-slate-300 group-hover:text-sky-600 shrink-0 transition" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         )}
 
@@ -1541,8 +1495,7 @@ export default function App() {
 
                   <button
                     onClick={() => {
-                      setSettingsInitialTab('history');
-                      setShowSettings(true);
+                      openSettings('history');
                     }}
                     className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-bold text-slate-700 hover:bg-slate-50"
                   >
