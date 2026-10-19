@@ -8,6 +8,32 @@ import {
 
 export const COMPREHENSIVE_WORD_BANK: Record<number, WordItem[]> = EXPANSIVE_WORDS_BY_LEVEL;
 
+export interface LibraryWordItem extends WordItem {
+  level: number;
+}
+
+/**
+ * Returns all words across all levels in the app's pre-populated word library,
+ * annotated with their level number.
+ */
+export function getAllLibraryWords(): LibraryWordItem[] {
+  const all: LibraryWordItem[] = [];
+  for (let lvl = 1; lvl <= 5; lvl++) {
+    const list = EXPANSIVE_WORDS_BY_LEVEL[lvl] || [];
+    for (const item of list) {
+      all.push({
+        word: item.word,
+        phoneticBreakdown: item.phoneticBreakdown,
+        phoneticSpeechCue: item.phoneticSpeechCue,
+        phonemes: item.phonemes,
+        exampleSentence: item.exampleSentence,
+        level: lvl,
+      });
+    }
+  }
+  return all;
+}
+
 export { EXPANSIVE_WORDS_BY_LEVEL, getTotalWordBankCount, getRandomSessionTheme };
 
 /**
@@ -22,3 +48,4 @@ export function getRandomSpellingWords(
 ): WordItem[] {
   return getCuratedWords(level, struggledWords, masteredWords) as WordItem[];
 }
+

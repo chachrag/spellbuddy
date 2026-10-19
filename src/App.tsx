@@ -26,6 +26,8 @@ import {
   LogIn,
   Home,
   RotateCcw,
+  SlidersHorizontal,
+  Edit3,
 } from 'lucide-react';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import {
@@ -49,6 +51,7 @@ import {
 import { AnnotatedImage } from './components/AnnotatedImage';
 import { SettingsModal } from './components/SettingsModal';
 import { ProfileModal } from './components/ProfileModal';
+import { EditSessionWordsModal } from './components/EditSessionWordsModal';
 import {
   loadAllProfiles,
   saveAllProfiles,
@@ -90,6 +93,7 @@ export default function App() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileModalMode, setProfileModalMode] = useState<'switch' | 'create' | 'edit' | 'share'>('switch');
   const [profileModalShareId, setProfileModalShareId] = useState<string | undefined>(undefined);
+  const [showEditWordsModal, setShowEditWordsModal] = useState(false);
   const [levelFeedbackNote, setLevelFeedbackNote] = useState<string | null>(null);
 
   const selectedVoice: StudioVoice = 'Kore';
@@ -1080,7 +1084,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Action Buttons: Start Round + Randomly Refresh Words */}
+            {/* Action Buttons: Start Round + Randomly Refresh Words + Customize Words */}
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <button
                 onClick={() => startNewRound()}
@@ -1109,7 +1113,64 @@ export default function App() {
                 <RefreshCw className={`h-5 w-5 text-amber-700 ${loadingWords ? 'animate-spin' : ''}`} />
                 Randomly Refresh Words
               </button>
+
+              <button
+                type="button"
+                onClick={() => setShowEditWordsModal(true)}
+                disabled={loadingWords}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-indigo-300 bg-indigo-50/90 px-6 py-4 text-base font-bold text-indigo-900 shadow transition hover:bg-indigo-100 hover:border-indigo-400 hover:scale-105 active:scale-95 disabled:opacity-60"
+                title="Manually search and choose words from the library for this session"
+              >
+                <SlidersHorizontal className="h-5 w-5 text-indigo-700" />
+                Customize Words
+              </button>
             </div>
+
+            {/* Session Words Preview List */}
+            {words.length > 0 && (
+              <div className="mt-8 rounded-2xl border-2 border-slate-100 bg-slate-50/60 p-4 sm:p-5 text-left">
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Session Words ({words.length})
+                    </span>
+                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800">
+                      Library Curated
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowEditWordsModal(true)}
+                    className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    <span>Edit Words</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {words.slice(0, 10).map((wordItem, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setShowEditWordsModal(true)}
+                      className="group flex items-center justify-between gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 py-2 hover:border-sky-300 hover:bg-sky-50/50 hover:shadow-xs transition text-left"
+                      title={`Word #${idx + 1}: ${wordItem.word}. Click to customize.`}
+                    >
+                      <div className="min-w-0 flex items-center gap-1.5">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-black text-slate-600 group-hover:bg-sky-500 group-hover:text-white transition">
+                          {idx + 1}
+                        </span>
+                        <span className="truncate text-xs font-bold text-slate-800 capitalize">
+                          {wordItem.word}
+                        </span>
+                      </div>
+                      <Edit3 className="h-3 w-3 text-slate-300 group-hover:text-sky-600 shrink-0 transition" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1154,6 +1215,17 @@ export default function App() {
                   >
                     <RefreshCw className={`h-3 w-3 ${loadingWords ? 'animate-spin' : ''}`} />
                     <span className="hidden sm:inline">Refresh Words</span>
+                  </button>
+                  <button
+                    onClick={() => setShowEditWordsModal(true)}
+                    disabled={speakingMode !== 'none'}
+                    className={`flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-100 transition shadow-sm ${
+                      speakingMode !== 'none' ? 'opacity-40 cursor-not-allowed' : ''
+                    }`}
+                    title="Search and edit session words from the library"
+                  >
+                    <SlidersHorizontal className="h-3 w-3 text-indigo-600" />
+                    <span className="hidden sm:inline">Edit Words</span>
                   </button>
                   <div className="flex flex-wrap gap-1.5">
                     {words.map((_, idx) => (
@@ -1635,6 +1707,29 @@ export default function App() {
           setProfiles(all);
           setStage('welcome');
           stopCurrentAudio();
+        }}
+      />
+
+      {/* Edit Session Words Modal */}
+      <EditSessionWordsModal
+        isOpen={showEditWordsModal}
+        onClose={() => setShowEditWordsModal(false)}
+        words={words}
+        onSaveWords={(newWords, startImmediately) => {
+          setWords(newWords);
+          setRevealedIndices({});
+          setSpokenIndices({});
+          setCurrentIndex(0);
+          setRefreshSuccessNote(`Updated session with 10 words from library!`);
+          setTimeout(() => setRefreshSuccessNote(null), 3500);
+          if (startImmediately) {
+            setStage('round');
+          }
+        }}
+        currentLevel={profile.difficultyLevel}
+        profileName={profile.name}
+        onResetToAdaptive={() => {
+          refreshWelcomeWords();
         }}
       />
     </div>
