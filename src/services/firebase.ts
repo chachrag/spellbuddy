@@ -27,10 +27,7 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { KidProfile, WordHistoryRecord, ApprovedUser, WordItem } from '../types';
-
-try {
-  setLogLevel('silent');
-} catch {}
+import { sanitizeProfile } from '../profileManager';
 
 export const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -279,6 +276,25 @@ export async function checkUserApproval(user: User): Promise<{
         };
       }
     }
+
+    // 3. Check if any speller profile has been shared with this email in /shared_profiles
+    try {
+      const sharedColl = collection(db, 'shared_profiles');
+      const sharedQuery = query(sharedColl, where('collaboratorEmails', 'array-contains', email));
+      const sharedSnap = await withTimeout(getDocs(sharedQuery), 3500, null);
+      if (sharedSnap && !sharedSnap.empty) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(approvalCacheKey, 'speller_parent');
+        }
+        return {
+          isApproved: true,
+          isAdmin: false,
+          userProfile: { role: 'speller_parent', approved: true, email },
+        };
+      }
+    } catch (sharedErr) {
+      console.warn('Check shared_profiles approval error:', sharedErr);
+    }
   } catch (err) {
     console.warn('Error checking user approval:', err);
   }
@@ -291,9 +307,10 @@ export async function checkUserApproval(user: User): Promise<{
 }
 
 /**
- * Loads all speller profiles for the given user, querying both:
- * 1. Top-level /shared_profiles collection (profiles owned by or shared with this user's Gmail)
- * 2. Legacy /users/{uid}/profiles subcollection
+ * Loads all speller profiles for the given user, querying:
+ * 1. Top-level /shared_profiles collection where collaboratorEmails contains user's Gmail
+ * 2. Top-level /shared_profiles collection where ownerId equals user's UID
+ * 3. Legacy /users/{uid}/profiles subcollection
  */
 export async function loadFirestoreSpellerProfiles(
   userOrId: string | { uid: string; email?: string | null }
@@ -304,51 +321,78 @@ export async function loadFirestoreSpellerProfiles(
 
   const profilesMap = new Map<string, KidProfile>();
 
-  try {
-    // 1. Query /shared_profiles where collaboratorEmails array-contains userEmail
-    if (userEmail) {
+  // 1. Query /shared_profiles where collaboratorEmails array-contains userEmail
+  if (userEmail) {
+    try {
       const sharedColl = collection(db, 'shared_profiles');
       const q = query(sharedColl, where('collaboratorEmails', 'array-contains', userEmail));
-      const sharedSnap = await withTimeout(getDocs(q), 3000, null);
-      if (sharedSnap) {
+      const sharedSnap = await withTimeout(getDocs(q), 8000, null);
+      if (sharedSnap && !sharedSnap.empty) {
         sharedSnap.forEach((d) => {
           const data = d.data() as KidProfile;
-          profilesMap.set(data.id, data);
+          if (data && data.id) {
+            profilesMap.set(data.id, sanitizeProfile(data));
+          }
         });
       }
+    } catch (err) {
+      console.warn('Query /shared_profiles by collaboratorEmails warning:', err);
     }
-
-    // 2. Query legacy /users/{uid}/profiles
-    const collRef = collection(db, 'users', userId, 'profiles');
-    const legacySnap = await withTimeout(getDocs(collRef), 2500, null);
-    if (legacySnap) {
-      legacySnap.forEach((d) => {
-        const legacyData = d.data() as KidProfile;
-        if (!profilesMap.has(legacyData.id)) {
-          profilesMap.set(legacyData.id, legacyData);
-          // Automatically back up to shared_profiles so it can be shared with other Gmail accounts!
-          if (userEmail) {
-            saveFirestoreSpellerProfile(
-              { uid: userId, email: userEmail },
-              {
-                ...legacyData,
-                ownerId: userId,
-                ownerEmail: userEmail,
-                collaboratorEmails: [userEmail],
-              }
-            ).catch(() => {});
-          }
-        }
-      });
-    }
-
-    return Array.from(profilesMap.values());
-  } catch (error) {
-    if (isQuotaExhaustedError(error)) {
-      setFirestoreQuotaExhausted(true);
-    }
-    return Array.from(profilesMap.values());
   }
+
+  // 2. Query /shared_profiles where ownerId == userId
+  if (userId) {
+    try {
+      const sharedColl = collection(db, 'shared_profiles');
+      const qOwner = query(sharedColl, where('ownerId', '==', userId));
+      const ownerSnap = await withTimeout(getDocs(qOwner), 8000, null);
+      if (ownerSnap && !ownerSnap.empty) {
+        ownerSnap.forEach((d) => {
+          const data = d.data() as KidProfile;
+          if (data && data.id && !profilesMap.has(data.id)) {
+            profilesMap.set(data.id, sanitizeProfile(data));
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Query /shared_profiles by ownerId warning:', err);
+    }
+  }
+
+  // 3. Query legacy /users/{uid}/profiles
+  if (userId) {
+    try {
+      const collRef = collection(db, 'users', userId, 'profiles');
+      const legacySnap = await withTimeout(getDocs(collRef), 6000, null);
+      if (legacySnap && !legacySnap.empty) {
+        legacySnap.forEach((d) => {
+          const legacyData = d.data() as KidProfile;
+          if (legacyData && legacyData.id && !profilesMap.has(legacyData.id)) {
+            const sanitized = sanitizeProfile(legacyData);
+            profilesMap.set(legacyData.id, sanitized);
+            // Backup to shared_profiles so sharing and cross-device sync work
+            if (userEmail) {
+              saveFirestoreSpellerProfile(
+                { uid: userId, email: userEmail },
+                {
+                  ...sanitized,
+                  ownerId: sanitized.ownerId || userId,
+                  ownerEmail: sanitized.ownerEmail || userEmail,
+                  collaboratorEmails: sanitized.collaboratorEmails?.length
+                    ? sanitized.collaboratorEmails
+                    : [userEmail],
+                }
+              ).catch(() => {});
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Query legacy /users/{uid}/profiles warning:', err);
+    }
+  }
+
+  return Array.from(profilesMap.values());
 }
 
 /**
@@ -356,7 +400,8 @@ export async function loadFirestoreSpellerProfiles(
  */
 export async function saveFirestoreSpellerProfile(
   userOrId: string | { uid: string; email?: string | null },
-  profile: KidProfile
+  profile: KidProfile,
+  throwOnError: boolean = false
 ): Promise<void> {
   if (isFirestoreQuotaExhausted()) {
     return;
@@ -392,18 +437,23 @@ export async function saveFirestoreSpellerProfile(
   try {
     // 1. Save to /shared_profiles/{profile.id}
     const sharedRef = doc(db, 'shared_profiles', profile.id);
-    await withTimeout(setDoc(sharedRef, enrichedProfile, { merge: true }), 2500, undefined);
+    await withTimeout(setDoc(sharedRef, enrichedProfile, { merge: true }), 8000, undefined);
 
     // 2. Also save to legacy /users/{userId}/profiles/{profile.id}
-    const userProfileRef = doc(db, 'users', userId, 'profiles', profile.id);
-    await withTimeout(setDoc(userProfileRef, enrichedProfile, { merge: true }), 2000, undefined);
+    if (userId) {
+      const userProfileRef = doc(db, 'users', userId, 'profiles', profile.id);
+      await withTimeout(setDoc(userProfileRef, enrichedProfile, { merge: true }), 5000, undefined);
+    }
   } catch (error) {
     if (isQuotaExhaustedError(error)) {
       setFirestoreQuotaExhausted(true);
       console.warn('Firestore write quota reached; profile saved locally.');
       return;
     }
-    console.warn('Error saving shared profile to Firestore:', error);
+    console.error('Error saving shared profile to Firestore:', error);
+    if (throwOnError) {
+      throw error;
+    }
   }
 }
 
@@ -420,12 +470,13 @@ export async function shareSpellerProfileWithEmail(
     throw new Error('Please enter a valid email address.');
   }
 
-  const ownerEmail = (profile.ownerEmail || user.email || '').toLowerCase().trim();
+  const userEmail = (user.email || '').toLowerCase().trim();
+  const ownerEmail = (profile.ownerEmail || userEmail).toLowerCase().trim();
   if (targetEmail === ownerEmail) {
     throw new Error('This profile is already owned by this account.');
   }
 
-  const existingShared = profile.sharedWithEmails || [];
+  const existingShared = (profile.sharedWithEmails || []).map((e) => e.toLowerCase().trim());
   if (existingShared.includes(targetEmail)) {
     return profile; // Already shared
   }
@@ -435,13 +486,15 @@ export async function shareSpellerProfileWithEmail(
 
   const updatedProfile: KidProfile = {
     ...profile,
+    ownerId: profile.ownerId || user.uid,
+    ownerEmail: ownerEmail || userEmail,
     sharedWithEmails: updatedShared,
     collaboratorEmails: updatedCollaborators,
     updatedAt: new Date().toISOString(),
-    updatedByEmail: (user.email || '').toLowerCase().trim(),
+    updatedByEmail: userEmail || ownerEmail,
   };
 
-  await saveFirestoreSpellerProfile(user, updatedProfile);
+  await saveFirestoreSpellerProfile(user, updatedProfile, true);
   return updatedProfile;
 }
 
@@ -454,25 +507,30 @@ export async function unshareSpellerProfileWithEmail(
   emailToRemove: string
 ): Promise<KidProfile> {
   const targetEmail = emailToRemove.toLowerCase().trim();
-  const ownerEmail = (profile.ownerEmail || user.email || '').toLowerCase().trim();
+  const userEmail = (user.email || '').toLowerCase().trim();
+  const ownerEmail = (profile.ownerEmail || userEmail).toLowerCase().trim();
 
-  const updatedShared = (profile.sharedWithEmails || []).filter((e) => e.toLowerCase() !== targetEmail);
+  const updatedShared = (profile.sharedWithEmails || [])
+    .map((e) => e.toLowerCase().trim())
+    .filter((e) => e !== targetEmail);
   const updatedCollaborators = Array.from(new Set([ownerEmail, ...updatedShared].filter(Boolean)));
 
   const updatedProfile: KidProfile = {
     ...profile,
+    ownerId: profile.ownerId || user.uid,
+    ownerEmail: ownerEmail || userEmail,
     sharedWithEmails: updatedShared,
     collaboratorEmails: updatedCollaborators,
     updatedAt: new Date().toISOString(),
-    updatedByEmail: (user.email || '').toLowerCase().trim(),
+    updatedByEmail: userEmail || ownerEmail,
   };
 
-  await saveFirestoreSpellerProfile(user, updatedProfile);
+  await saveFirestoreSpellerProfile(user, updatedProfile, true);
   return updatedProfile;
 }
 
 /**
- * Subscribes to real-time changes on a shared speller profile so all devices stay in sync!
+ * Subscribes to real-time changes on a specific speller profile document.
  */
 export function subscribeToSpellerProfile(
   profileId: string,
@@ -484,7 +542,7 @@ export function subscribeToSpellerProfile(
       docRef,
       (snap) => {
         if (snap.exists()) {
-          onUpdate(snap.data() as KidProfile);
+          onUpdate(sanitizeProfile(snap.data() as KidProfile));
         }
       },
       (err) => {
@@ -492,6 +550,39 @@ export function subscribeToSpellerProfile(
       }
     );
   } catch {
+    return () => {};
+  }
+}
+
+/**
+ * Subscribes to real-time changes for ALL speller profiles shared with a specific Gmail address.
+ * Enables zero-refresh real-time syncing when another parent or teacher shares or edits a profile.
+ */
+export function subscribeToUserSharedProfiles(
+  userEmail: string,
+  onProfilesUpdate: (profiles: KidProfile[]) => void
+): () => void {
+  const cleanEmail = userEmail.toLowerCase().trim();
+  if (!cleanEmail) return () => {};
+
+  try {
+    const sharedColl = collection(db, 'shared_profiles');
+    const q = query(sharedColl, where('collaboratorEmails', 'array-contains', cleanEmail));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const results: KidProfile[] = [];
+        snapshot.forEach((d) => {
+          results.push(sanitizeProfile(d.data() as KidProfile));
+        });
+        onProfilesUpdate(results);
+      },
+      (err) => {
+        console.warn('Realtime subscription error for shared profiles:', err);
+      }
+    );
+  } catch (err) {
+    console.warn('Could not establish shared profiles subscription:', err);
     return () => {};
   }
 }

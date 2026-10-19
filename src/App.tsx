@@ -66,6 +66,7 @@ import {
   loadFirestoreSpellerProfiles,
   saveFirestoreSpellerProfile,
   subscribeToSpellerProfile,
+  subscribeToUserSharedProfiles,
   logWordAttemptToFirestore,
   MASTER_ADMIN_EMAIL,
 } from './services/firebase';
@@ -143,25 +144,18 @@ export default function App() {
                 if (cloudProfiles && cloudProfiles.length > 0) {
                   setProfiles(cloudProfiles);
                   saveAllProfiles(cloudProfiles);
-                  const active =
-                    cloudProfiles.find((p) => p.id === getActiveProfileId()) || cloudProfiles[0];
+                  const activeId = getActiveProfileId();
+                  let active = cloudProfiles.find((p) => p.id === activeId);
+                  if (!active || (active.id === 'profile-default' && cloudProfiles.length > 1)) {
+                    active = cloudProfiles.find((p) => p.id !== 'profile-default') || cloudProfiles[0];
+                  }
                   setProfile(active);
                   setActiveProfileId(active.id);
-                } else {
-                  const initialWithUser: KidProfile = {
-                    ...profile,
-                    userId: user.uid,
-                    ownerId: user.uid,
-                    ownerEmail: user.email?.toLowerCase().trim(),
-                    collaboratorEmails: user.email ? [user.email.toLowerCase().trim()] : [],
-                    masteredWords: profile.masteredWords || [],
-                  };
-                  setProfiles([initialWithUser]);
-                  setProfile(initialWithUser);
-                  saveFirestoreSpellerProfile(user, initialWithUser).catch(() => {});
                 }
               })
-              .catch(() => {});
+              .catch((err) => {
+                console.warn('Background profile sync error:', err);
+              });
           }
         } catch (err) {
           console.error('Error verifying user approval:', err);
@@ -191,16 +185,61 @@ export default function App() {
     });
     setActiveProfileId(profile.id);
 
-    if (currentUser?.uid && isApproved) {
+    // Only save real/customized profiles to Firestore, avoid auto-writing default empty placeholder
+    if (currentUser?.uid && isApproved && profile.id !== 'profile-default') {
       saveFirestoreSpellerProfile(currentUser, profile).catch((err) => {
         console.warn('Failed to sync profile to Firestore:', err);
       });
     }
   }, [profile, currentUser, isApproved]);
 
-  // Real-time synchronization for shared speller profiles across family accounts
+  // Real-time synchronization for ALL profiles shared with the signed-in user's email
   useEffect(() => {
-    if (!profile.id || !currentUser) return;
+    const userEmail = currentUser?.email?.toLowerCase().trim();
+    if (!userEmail || !isApproved) return;
+
+    const unsubscribe = subscribeToUserSharedProfiles(userEmail, (sharedProfiles) => {
+      if (!sharedProfiles || sharedProfiles.length === 0) return;
+
+      setProfiles((prev) => {
+        const map = new Map<string, KidProfile>();
+        // Add existing profiles (filter out default placeholder if we now have real profiles)
+        prev.forEach((p) => {
+          if (p.id !== 'profile-default') {
+            map.set(p.id, p);
+          }
+        });
+        // Merge in shared profiles
+        sharedProfiles.forEach((p) => {
+          map.set(p.id, p);
+        });
+        const nextList = Array.from(map.values());
+        saveAllProfiles(nextList);
+        return nextList;
+      });
+
+      setProfile((prev) => {
+        // If current profile is updated in sharedProfiles, take the latest
+        const matched = sharedProfiles.find((p) => p.id === prev.id);
+        if (matched) {
+          return matched;
+        }
+        // If current profile is the default placeholder, immediately switch to the shared profile!
+        if (prev.id === 'profile-default' && sharedProfiles.length > 0) {
+          const firstReal = sharedProfiles[0];
+          setActiveProfileId(firstReal.id);
+          return firstReal;
+        }
+        return prev;
+      });
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.email, isApproved]);
+
+  // Real-time synchronization for active speller profile document changes
+  useEffect(() => {
+    if (!profile.id || !currentUser || profile.id === 'profile-default') return;
     const unsubscribe = subscribeToSpellerProfile(profile.id, (cloudUpdated) => {
       if (
         cloudUpdated &&

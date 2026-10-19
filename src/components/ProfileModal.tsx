@@ -135,14 +135,20 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     e.preventDefault();
     const cleanEmail = shareEmailInput.toLowerCase().trim();
     if (!cleanEmail) return;
+
+    if (!currentUser || !currentUser.email) {
+      setShareError('Please sign in with your Google account (top right) before sharing a profile.');
+      return;
+    }
+
     setShareLoading(true);
     setShareError(null);
     setShareSuccess(null);
     try {
       const targetProfile = profiles.find((p) => p.id === sharingProfileId) || activeProfile;
-      const userObj = currentUser || {
-        uid: targetProfile.ownerId || 'user',
-        email: targetProfile.ownerEmail,
+      const userObj = {
+        uid: currentUser.uid,
+        email: currentUser.email.toLowerCase().trim(),
       };
       const updated = await shareSpellerProfileWithEmail(userObj, targetProfile, cleanEmail);
       const updatedList = profiles.map((p) => (p.id === sharingProfileId ? updated : p));
@@ -158,14 +164,19 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   };
 
   const handleRevokeShare = async (emailToRemove: string) => {
+    if (!currentUser || !currentUser.email) {
+      setShareError('Please sign in with your Google account first.');
+      return;
+    }
+
     setShareLoading(true);
     setShareError(null);
     setShareSuccess(null);
     try {
       const targetProfile = profiles.find((p) => p.id === sharingProfileId) || activeProfile;
-      const userObj = currentUser || {
-        uid: targetProfile.ownerId || 'user',
-        email: targetProfile.ownerEmail,
+      const userObj = {
+        uid: currentUser.uid,
+        email: currentUser.email.toLowerCase().trim(),
       };
       const updated = await unshareSpellerProfileWithEmail(userObj, targetProfile, emailToRemove);
       const updatedList = profiles.map((p) => (p.id === sharingProfileId ? updated : p));

@@ -87,13 +87,13 @@ service cloud.firestore {
     }
 
     function isValidSharedProfile(data) {
-      return data.keys().hasAll(['id', 'name', 'age', 'difficultyLevel', 'ownerId', 'ownerEmail', 'collaboratorEmails']) &&
+      return data.keys().hasAll(['id', 'name', 'age', 'difficultyLevel', 'ownerId', 'collaboratorEmails']) &&
         data.id is string && data.id.size() <= 64 &&
         data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
         data.age is number && data.age >= 4 && data.age <= 16 &&
         data.difficultyLevel is number && data.difficultyLevel >= 1 && data.difficultyLevel <= 5 &&
-        data.ownerId is string && data.ownerId.size() <= 64 &&
-        data.ownerEmail is string && data.ownerEmail.size() <= 128 &&
+        data.ownerId is string && data.ownerId.size() <= 128 &&
+        (!('ownerEmail' in data) || (data.ownerEmail is string && data.ownerEmail.size() <= 128)) &&
         data.collaboratorEmails is list && data.collaboratorEmails.size() <= 25 &&
         (!('sharedWithEmails' in data) || (data.sharedWithEmails is list && data.sharedWithEmails.size() <= 25)) &&
         (!('struggledWords' in data) || (data.struggledWords is list && data.struggledWords.size() <= 300)) &&
@@ -153,10 +153,21 @@ service cloud.firestore {
 
     // 7. Shared Speller Profiles
     match /shared_profiles/{profileId} {
-      allow get, list: if isSignedIn() && (
-        resource.data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+      allow get: if isSignedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() in resource.data.collaboratorEmails ||
+          request.auth.token.email in resource.data.collaboratorEmails
+        )) ||
         resource.data.ownerId == request.auth.uid ||
-        resource.data.ownerEmail == request.auth.token.email.lower() ||
+        (request.auth.token.email != null && resource.data.ownerEmail == request.auth.token.email.lower()) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() in resource.data.collaboratorEmails ||
+          request.auth.token.email in resource.data.collaboratorEmails
+        )) ||
+        resource.data.ownerId == request.auth.uid ||
         isAdmin()
       );
       allow create: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
@@ -164,9 +175,12 @@ service cloud.firestore {
         isAdmin()
       );
       allow update: if isSignedIn() && isValidSharedProfile(request.resource.data) && (
-        resource.data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() in resource.data.collaboratorEmails ||
+          request.auth.token.email in resource.data.collaboratorEmails
+        )) ||
         resource.data.ownerId == request.auth.uid ||
-        resource.data.ownerEmail == request.auth.token.email.lower() ||
+        (request.auth.token.email != null && resource.data.ownerEmail == request.auth.token.email.lower()) ||
         isAdmin()
       );
       allow delete: if isSignedIn() && (
@@ -177,11 +191,19 @@ service cloud.firestore {
       // Subcollection: Shared Speller History Records
       match /history/{historyId} {
         allow get, list: if isSignedIn() && (
-          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+          (request.auth.token.email != null && (
+            request.auth.token.email.lower() in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails ||
+            request.auth.token.email in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails
+          )) ||
+          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid ||
           isAdmin()
         );
         allow create: if isSignedIn() && (
-          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails.hasAny([request.auth.token.email.lower(), request.auth.token.email]) ||
+          (request.auth.token.email != null && (
+            request.auth.token.email.lower() in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails ||
+            request.auth.token.email in get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.collaboratorEmails
+          )) ||
+          get(/databases/$(database)/documents/shared_profiles/$(profileId)).data.ownerId == request.auth.uid ||
           isAdmin()
         );
         allow update: if false;

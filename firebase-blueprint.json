@@ -97,6 +97,29 @@
           "type": "number",
           "description": "Consecutive rounds scored >= 9 at current level"
         },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the creator parent account",
+          "maxLength": 128
+        },
+        "ownerEmail": {
+          "type": "string",
+          "description": "Email address of the creator parent",
+          "maxLength": 128
+        },
+        "sharedWithEmails": {
+          "type": "array",
+          "description": "List of collaborator Gmail accounts with shared access"
+        },
+        "collaboratorEmails": {
+          "type": "array",
+          "description": "All authorized account emails (owner + shared accounts) for index queries"
+        },
+        "updatedByEmail": {
+          "type": "string",
+          "description": "Email address of the user who last edited this profile",
+          "maxLength": 128
+        },
         "updatedAt": {
           "type": "string",
           "description": "Timestamp of last profile update"
@@ -267,6 +290,14 @@
     "/tts_cache/{wordKey}": {
       "schema": { "$ref": "TtsAudioCache" },
       "description": "Pre-created TTS audio cache for spelling words to eliminate AI TTS token usage"
+    },
+    "/shared_profiles/{profileId}": {
+      "schema": { "$ref": "SpellerProfile" },
+      "description": "Shared child speller profile synced across family and educator accounts"
+    },
+    "/shared_profiles/{profileId}/history/{historyId}": {
+      "schema": { "$ref": "WordHistoryRecord" },
+      "description": "Historical word attempt logs for shared child speller profile"
     }
   }
 }
